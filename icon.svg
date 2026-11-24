@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Git plugin updates">
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#1f2937"/>
+  <g fill="none" stroke="#e5f2ff" stroke-width="3" stroke-linecap="round">
+    <path d="M18 44V22"/>
+    <path d="M18 22h20"/>
+    <path d="M46 20v10"/>
+  </g>
+  <circle cx="18" cy="46" r="5" fill="#7dd3fc"/>
+  <circle cx="18" cy="22" r="5" fill="#7dd3fc"/>
+  <circle cx="38" cy="22" r="5" fill="#7dd3fc"/>
+  <path d="M46 34v12" stroke="#fbbf24" stroke-width="4" stroke-linecap="round"/>
+  <path d="M40 41l6 6 6-6" fill="none" stroke="#fbbf24" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

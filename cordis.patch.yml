@@ -1,0 +1,33 @@
+# 把 dsh-git-updates 挂进 profile 的 Loader。
+#
+# 宿主半侧（index.js）注册同源路由 /api/dsh-git-updates：
+#   GET  （不带 package）  全部 Git 来源插件的行（含 sticky 快照）+ activeJob
+#   GET  ?package=<name>   读已装 commit / 上游 commit / 上次更新 / 待重启（带缓存）
+#   GET  ?jobId=<id>       读更新任务的四步、每步耗时与日志
+#   POST {action:check}    强制向上游探测一次
+#   POST {action:update}   卸载 → 安装（确认过的）目标 commit → 校验（失败回滚）
+#   POST {action:cancel}   取消正在跑的更新
+# 宿主订阅 plugin-manager/install-log 与 install-state，把安装输出写进任务日志。
+# 后台巡检默认关闭；profile 里配 backgroundCheckMs 才启用。
+#
+# 浏览器半侧（client.js）只挂设置页：
+#   settings.section       「插件更新」整页：列表 + 检查 + 更新 + 进度 + 取消
+#   settings.section.icon  左侧导航图标
+# 不在插件详情页、插件页标签或全局浮层添加任何控件。
+#
+# 更新时包会先被卸载、从 listBundles() 消失：宿主用任务开跑前的快照把行补回来
+# （lib/sticky.js），所以设置页里的那一行不会消失，进度照常显示。
+#
+# 只处理 profile 里 github: / git+https: / git@host: 安装的插件；registry、
+# tarball、link: 来源的插件上不渲染任何控件。本工具不更新自己。
+#
+# 可选配置与默认值（写在下面的 config 里覆盖即可）：
+#   probeTimeoutMs: 15000          单次 git ls-remote 超时
+#   sshFallback: true              HTTPS 读不到时改用 SSH 再试一次
+#   pinCommits: true               更新后把依赖钉到具体 commit
+#   cacheTtlMs: 600000             检查结果缓存时长
+#   backgroundCheckMs: 0           后台巡检间隔；0 关闭（默认）
+#   backgroundCheckStartMs: 60000  开启巡检时，启动后多久做第一次
+- insert:
+    - id: git-updates
+      name: 'dsh-git-updates'
