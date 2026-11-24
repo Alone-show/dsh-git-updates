@@ -68,6 +68,7 @@ function fakeManager(profileDir, options = {}) {
 
 const source = {
   baseSpec: 'github:owner/repo', host: 'github.com', path: 'owner/repo', owner: 'owner', repo: 'repo', ref: 'main',
+  sshGitUrl: 'git+ssh://git@github.com/owner/repo.git',
 }
 const previous = { version: '1.0.0', commit: OLD }
 
@@ -106,7 +107,7 @@ test('a successful update removes, installs a pinned spec and verifies', async (
       onStep: (step, message) => steps.push(step),
     })
     assert.deepEqual(manager.calls.remove, ['pkg'])
-    assert.equal(manager.calls.install[0].spec, `github:owner/repo#${NEW}`)
+    assert.equal(manager.calls.install[0].spec, `pkg@github:owner/repo#${NEW}`)
     assert.equal(manager.calls.install[0].options.enabled, true)
     assert.equal(manager.calls.install[0].options.requestId, 'req-1')
     assert.equal(result.verified, true)
@@ -125,7 +126,7 @@ test('pinCommits false keeps the branch spec', async () => {
       manager, profileDir: dir, name: 'pkg', source, enabled: false, previous,
       targetCommit: NEW, pinCommits: false, hmr: false, onStep: () => {},
     })
-    assert.equal(manager.calls.install[0].spec, 'github:owner/repo')
+    assert.equal(manager.calls.install[0].spec, 'pkg@github:owner/repo')
     assert.equal(manager.calls.install[0].options.enabled, false)
     assert.deepEqual(manager.calls.remove, [])
     assert.equal(result.verified, true)
@@ -147,7 +148,7 @@ test('a failed install restores the previous pinned commit', async () => {
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'INSTALL_FAILED')
     assert.equal(manager.calls.install.length, 2)
-    assert.equal(manager.calls.install[1].spec, `github:owner/repo#${OLD}`)
+    assert.equal(manager.calls.install[1].spec, `pkg@github:owner/repo#${OLD}`)
     assert.equal(result.restore.spec, `github:owner/repo#${OLD}`)
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -164,7 +165,7 @@ test('a failed verification restores the previous commit', async () => {
     })
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'VERIFY_FAILED')
-    assert.equal(manager.calls.install[1].spec, `github:owner/repo#${OLD}`)
+    assert.equal(manager.calls.install[1].spec, `pkg@github:owner/repo#${OLD}`)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -202,7 +203,7 @@ test('cancelling after removal reinstalls the previous version', async () => {
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'CANCELLED')
     assert.equal(manager.calls.install.length, 1)
-    assert.equal(manager.calls.install[0].spec, `github:owner/repo#${OLD}`)
+    assert.equal(manager.calls.install[0].spec, `pkg@github:owner/repo#${OLD}`)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -250,6 +251,43 @@ test('a failed install logs the diagnostic and the rollback', async () => {
     assert.notEqual(result.restore, undefined)
     assert.equal(logs.some(entry => entry.level === 'error' && entry.message.includes('boom')), true)
     assert.equal(logs.some(entry => entry.level === 'warn' && entry.message.includes('已回滚')), true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+
+test('a private repository installs through SSH under its real package name', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir)
+    const result = await runUpdate({
+      manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
+      targetCommit: NEW, pinCommits: true, hmr: true, ssh: true, onStep: () => {},
+    })
+    assert.equal(
+      manager.calls.install[0].spec,
+      `pkg@git+ssh://git@github.com/owner/repo.git#${NEW}`,
+    )
+    // 落盘/展示仍用规范写法。
+    assert.equal(result.spec, `github:owner/repo#${NEW}`)
+    assert.equal(result.verified, true)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a failed SSH install rolls back through the same SSH address', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, { installResult: { changed: false, application: 'failed', stage: 'install', target: 'x', error: { code: 'INSTALL_FAILED', diagnostic: 'boom' } } })
+    const result = await runUpdate({
+      manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
+      targetCommit: NEW, pinCommits: true, hmr: true, ssh: true, onStep: () => {},
+    })
+    assert.equal(manager.calls.install.length, 2)
+    assert.equal(manager.calls.install[1].spec, `pkg@git+ssh://git@github.com/owner/repo.git#${OLD}`)
+    assert.equal(result.restore.spec, `github:owner/repo#${OLD}`)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

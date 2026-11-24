@@ -2,7 +2,7 @@
 
 > 目标：给「从 GitHub / Git 拉取安装的插件」补上检查更新与一键更新的能力，入口放在**设置**里。
 > 运行环境：DSH Desktop（`next` 通道，profile=`desktop`，DSH `0.2.2-rc.5`），Linux，Node 22，pnpm 11.28.5。
-> 文档日期：2026-11-24 · 插件版本：0.3.0（`link:/home/my/Downloads/dsh-git-updates`）
+> 文档日期：2026-11-24 · 插件版本：0.3.1（`link:/home/my/Downloads/dsh-git-updates`）
 >
 > **0.3.0 相对 0.2.0 的变更**：界面从「插件详情页 + 插件页标签 + 全局浮层」收敛为**设置里的独立一栏**（`settings.section`），其余页面的控件全部移除；新增「更新时那一行不能消失」的粘性行机制（`lib/sticky.js`）；任务视图补齐四步状态、每步耗时与实时日志；后台巡检默认关闭。
 
@@ -163,7 +163,16 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ### 7.2 来源解析（`lib/git-source.js`）
 
-支持形式：`github:o/r`、`github:o/r#main`、`github:o/r#<40位>`、`https://github.com/o/r`、`git+https://…git#v1`、`git@github.com:o/r.git`、`git+ssh://git@host/o/r.git#main`。明确拒绝 `file:` / `link:` / `workspace:` / `npm:` / 相对与绝对路径 / `.tgz`。派生 `httpsUrl`、`sshUrl`、`compareUrl`；`pinnedSpec(source, commit)` 生成 `<base>#<sha>`。
+支持形式：`github:o/r`、`github:o/r#main`、`github:o/r#<40位>`、`https://github.com/o/r`、`git+https://…git#v1`、`git@github.com:o/r.git`、`git+ssh://git@host/o/r.git#main`。明确拒绝 `file:` / `link:` / `workspace:` / `npm:` / 相对与绝对路径 / `.tgz`。派生 `httpsUrl`、`sshUrl`、`sshGitUrl`、`compareUrl`。
+
+两种 spec 必须分开：
+
+| 函数 | 形态 | 用途 |
+| --- | --- | --- |
+| `pinnedSpec(source, commit)` | `github:owner/repo#<sha>` | 状态/展示/日志里的规范写法（pnpm 落盘也是这个） |
+| `installSpec(source, name, commit, {ssh})` | `<包名>@<地址>#<sha>`，`ssh` 时地址是 `git+ssh://…` | 真正交给 `pnpm add` 的写法 |
+
+为什么要显式包名：pnpm 11 对「仓库名 ≠ 包名 + commit fragment」的 Git 依赖会把 fragment 混进 alias（`wechat_wroklog#<sha>`），报 `ERR_PNPM_INVALID_DEPENDENCY_NAME`；写成 `@local/wechat-worklog@git+ssh://…#<sha>` 后 pnpm 落盘仍归一成 `github:owner/repo#<sha>`。私有仓库（锁文件是 `git+ssh`，或探测只能走 SSH）直接用 SSH 地址，不依赖 pnpm 的 HTTPS 自动回退，也不弹凭据。
 
 ### 7.3 已装 commit（`lib/lockfile.js`）
 
@@ -171,13 +180,18 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ### 7.4 上游探测（`lib/probe.js`）
 
-`git -c core.askPass= ls-remote --exit-code -- <url> <ref|HEAD>`；环境禁 askpass/终端提示，默认 15s 超时并 `SIGKILL` 整个进程组，输出上限 256 KiB。解析优先 `refs/tags/<ref>^{}`，其次 `refs/heads/<ref>`、`refs/tags/<ref>`，最后任意 `/<ref>` 后缀；无 ref 取 `HEAD`。失败分类 `timeout/auth/network/not-found/unknown`；只有 `auth` 触发 SSH 回退。
+- `probeSource`：`git -c core.askPass= ls-remote --exit-code -- <url> <ref|HEAD>`；解析优先 `refs/tags/<ref>^{}`，其次 `refs/heads/<ref>`、`refs/tags/<ref>`，最后任意 `/<ref>` 后缀。
+- `probeRefs`：`git ls-remote --symref <url>` 一次列全部分支，返回远端 HEAD、默认分支与每个分支的尖端，用 `branchForCommit()` 按已装 commit 反查跟踪分支。
+- 两者都：禁 askpass/终端提示，默认 15s 超时并 `SIGKILL` 整个进程组，输出上限 256 KiB；失败分类 `timeout/auth/network/not-found/unknown`，只有 `auth` 触发 SSH 回退。
+
+**为什么需要反查分支**：spec 被钉成 `#<sha>` 后，`source.ref` 就丢了；如果仓库默认 HEAD 与插件分支不同（例如 `wechat_wroklog` 的 `main` 与 `dsh-plugin`），直接探 HEAD 会把插件更到根本不含 bundle 的提交。现在的顺序是：spec 里的分支 → `trackedRefs` 配置 → 已记录的 `trackedRef` → 用已装 commit 匹配分支尖端 → 远端 HEAD（都找不到时）。
 
 ### 7.5 业务层（`lib/service.js`）
 
 - `describe(name)`：`listBundles()` + lockfile + state → `{bundle, view, source}`。
 - `view(name)` / `list()`：只合成视图，不联网；`list()` 走 `mergeSticky()`。
-- `check(name, {force})`：缓存 TTL（默认 10 分钟）内直接返回；同一包并发检查共用一个 `Promise`。
+- `check(name, {force})`：缓存 TTL（默认 10 分钟）内直接返回；同一包并发检查共用一个 `Promise`。钉 commit 且没有已知分支时走 `probeRefs` 反查，学到分支后写进状态的 `trackedRef`。
+- `update` 安装时按「锁文件是否 `git+ssh` / 上次探测传输」决定用 SSH 地址，并统一使用 `installSpec`（显式包名）。
 - `update(name, {expectedCommit, targetCommit, force})` 前置校验顺序：
   1. 自身包 → `SELF_UPDATE`；
   2. 必须是受管 Git 依赖（`NOT_MANAGED`）；
@@ -234,6 +248,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `sshFallback` | true | HTTPS 凭据失败时改试 SSH |
 | `pinCommits` | true | 更新后是否钉到具体 commit |
 | `cacheTtlMs` | 600000 | 检查结果缓存 |
+| `trackedRefs` | `{}` | 包名 → 跟踪分支；钉 commit 后分支已前进、无法按已装 commit 反查时用它 |
 | `backgroundCheckMs` | 0 | 后台巡检间隔；0 关闭 |
 | `backgroundCheckStartMs` | 60000 | 开启巡检时的首次延迟 |
 | `maxBodyBytes` | 8192 | POST 体积上限 |
@@ -311,7 +326,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ## 10. 测试与验证
 
-### 10.1 单测（`node --test "test/*.test.js"`，91 个全过）
+### 10.1 单测（`node --test "test/*.test.js"`，100 个全过）
 
 | 文件 | 覆盖 |
 | --- | --- |
@@ -335,6 +350,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | 设置页入口 | 设置左侧出现「插件更新」，列表恰好 6 个 Git 来源插件 |
 | 检查 | `dsh-quick-keys` / `dsh-quota-widget` / `dsh-codex-connect` 显示已最新；其余显示有更新；`@local/wechat-worklog` 走 SSH 回退成功 |
 | 真实更新 | `dsh-delete-session` 从 `90a765f`（0.3.2）更新到 `53671e4`（0.5.1），`package.json` 钉到 `#53671e4`、lockfile codeload sha 同步，状态文件 `lastUpdate.verified:true` |
+| 私有仓库 | `@local/wechat-worklog` 通过本机 SSH 以 `@local/wechat-worklog@git+ssh://…` 安装到 `dsh-plugin` 分支的 `f0e2a5e`（0.2.3）；`probeRefs` 实测能反查出 `dsh-plugin`，不会更新到 `main` 的 `1fa69ca` |
 | 卸载期间行不消失 | 更新进行中每 250ms 轮询一次：`article.gu-row` 从未缺失；宿主列表同时返回 `sticky:true`；四步（检查/卸载/安装/校验）与实时日志都在，`已回滚` 未出现 |
 | 无控制台错误 | 整个「打开设置 → 检查 → 更新 → 完成」过程 `console error` / `pageerror` 均为 0 |
 
@@ -354,6 +370,8 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 6. **上游「落后 vs 回退」分不清**：`git ls-remote` 不带历史，只判断「不同」，页面用中立措辞并给 compare 链接。
 7. **私有仓库依赖本机凭据**：HTTPS token 或 SSH key，二者皆无时只能报「无法检查」。
 8. **不自我更新**：本工具若以 Git 来源出现，只提示到插件页更新，否则卸载自身会让设置页与路由一起消失。
+9. **钉 commit 后可能丢失分支**：已装 commit 不再等于任何分支尖端时无法自动反查，需要 `trackedRefs` 显式指定；否则退回按远端 HEAD 判断（可能把仓库默认分支误当成插件分支）。
+10. **pnpm 别名限制**：Git 依赖一律用「包名@地址」显式安装；其它工具若直接 `pnpm add github:owner/repo#sha` 仍可能触发 pnpm 11 的 alias 报错。
 9. **多 profile**：状态文件按 profile 隔离；插件本身也只服务当前 profile。
 
 ## 12. 后续可做的事
@@ -389,7 +407,7 @@ dsh-git-updates/
 ├── docs/DETAIL.md         # 插件详情页文档
 ├── docs/DESIGN.md         # 本文档
 ├── icon.svg
-└── test/*.test.js         # 91 个单测
+└── test/*.test.js         # 100 个单测
 ```
 
 ### B. 安装与观察

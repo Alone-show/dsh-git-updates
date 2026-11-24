@@ -4,7 +4,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { execFileSync } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { classifyFailure, gitEnv, matchRemoteRef, probeSource, runGit } from '../lib/probe.js'
+import { branchForCommit, classifyFailure, gitEnv, matchRemoteRef, parseRemoteRefs, probeRefs, probeSource, runGit } from '../lib/probe.js'
 
 test('matchRemoteRef picks HEAD, branches, tags and peeled tags', () => {
   const output = [
@@ -83,4 +83,40 @@ test('probeSource maps every command failure to a probe result', async () => {
   assert.equal(result.ok, false)
   assert.equal(typeof result.message, 'string')
   assert.ok(result.kind !== undefined)
+})
+
+
+test('parseRemoteRefs reads the default branch and every head', () => {
+  const output = [
+    'ref: refs/heads/main\tHEAD',
+    '1111111111111111111111111111111111111111\tHEAD',
+    '1111111111111111111111111111111111111111\trefs/heads/main',
+    '2222222222222222222222222222222222222222\trefs/heads/dsh-plugin',
+    '',
+  ].join('\n')
+  const listing = parseRemoteRefs(output)
+  assert.equal(listing.head, '1'.repeat(40))
+  assert.equal(listing.defaultBranch, 'main')
+  assert.deepEqual(Array.from(listing.heads, head => head.name), ['main', 'dsh-plugin'])
+})
+
+test('branchForCommit finds the branch a pinned commit came from', () => {
+  const listing = {
+    defaultBranch: 'main',
+    heads: [
+      { name: 'main', commit: '1'.repeat(40) },
+      { name: 'dsh-plugin', commit: '2'.repeat(40) },
+      { name: 'mirror', commit: '2'.repeat(40) },
+    ],
+  }
+  assert.equal(branchForCommit(listing, '2'.repeat(40)), 'dsh-plugin')
+  assert.equal(branchForCommit(listing, '1'.repeat(40)), 'main')
+  assert.equal(branchForCommit(listing, '3'.repeat(40)), undefined)
+  assert.equal(branchForCommit(listing, undefined), undefined)
+})
+
+test('probeRefs answers an unsupported source instead of throwing', async () => {
+  const result = await probeRefs(undefined, { cwd: tmpdir(), timeoutMs: 1000, sshFallback: true, command: 'git' })
+  assert.equal(result.ok, false)
+  assert.equal(result.kind, 'unsupported')
 })

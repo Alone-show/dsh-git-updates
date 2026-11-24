@@ -11,6 +11,8 @@
 - **只认 Git 来源**：`github:owner/repo`、`github:owner/repo#branch`、`git+https://…`、`git@host:owner/repo`。registry 包、tarball、`link:` 本地克隆不显示任何行。
 - **上游怎么读**：本机 `git ls-remote` 读跟踪 ref（没写分支就读远端 `HEAD`），HTTPS 被凭据挡住时按配置改试 SSH。不 fetch 仓库、不调 GitHub API、不发 token。
 - **已装 commit 从哪来**：`<profile>/pnpm-lock.yaml` 里 pnpm 记录的 codeload tarball 地址（也兼容 `git+ssh://…#<sha>` 与 peer 后缀）。
+- **跟踪分支**：spec 里有分支就用它；被钉成 commit 后用已装 commit 反查哪个分支的尖端是它（`git ls-remote --symref`），学到后持久化；分支已前进对不上时可用 `trackedRefs` 配置显式指定，避免把仓库默认分支误当插件分支。
+- **私有仓库**：锁文件解析到 `git+ssh`（或探测只能走 SSH）时，安装改用本机 SSH key，并以「包名@`git+ssh://…`」形式交给 pnpm，避开 pnpm 11 的 `ERR_PNPM_INVALID_DEPENDENCY_NAME` 与 HTTPS 凭据提示。
 - **更新怎么做**：确认态里看到的目标 commit 会随 POST 回传（`targetCommit`），宿主直接装这个 commit、不再重新探测，所以确认后立刻进入步骤条；随后卸载 → 安装目标 commit → 校验（锁文件 commit、包名、`dsh.bundle.patch`）→ 失败或取消时把原 spec 装回去。默认钉到具体 commit（`#<sha>`），回滚可精确复原；可用 `pinCommits: false` 改为分支跟随。
 - **行不消失**：包被卸载后会从 `listBundles()` 消失；宿主在任务开跑前保存该行快照，列表接口把「实时行 + 任务快照」合并返回（`sticky: true`），页面照常显示进度；前端再保留 5 秒兜底，避免轮询闪烁。回滚失败时也保留该行并标「未安装」。
 - **过程可见**：任务视图带固定四步（检查上游/卸载/安装/校验）、每步状态与耗时、整体耗时、带时间戳的日志；页面画成步骤条 + 可展开日志，行内按钮显示当前步骤。安装阶段还会把宿主 `plugin-manager/install-log` / `install-state` 的实时输出写进日志。

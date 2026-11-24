@@ -171,7 +171,7 @@ test('update runs to completion and pins the upstream commit', async () => {
     const job = await waitJob(service, started.jobId)
     assert.equal(job.status, 'done')
     assert.equal(job.result.verified, true)
-    assert.equal(manager.calls.install[0].spec, `github:owner/repo#${NEW}`)
+    assert.equal(manager.calls.install[0].spec, `pkg@github:owner/repo#${NEW}`)
     const state = await readState(dir)
     assert.equal(state.packages.pkg.lastCheck.state, 'current')
     assert.equal(state.packages.pkg.lastUpdate.verified, true)
@@ -485,7 +485,7 @@ test('a confirmed target commit skips the upstream probe and installs exactly th
     const job = await waitJob(service, started.jobId)
     assert.equal(job.status, 'done')
     assert.equal(probes, 0)
-    assert.equal(manager.calls.install[0].spec, `github:owner/repo#${third}`)
+    assert.equal(manager.calls.install[0].spec, `pkg@github:owner/repo#${third}`)
     const view = await service.view('pkg')
     assert.equal(view.check.state, 'current')
     assert.equal(view.check.latest, third)
@@ -535,6 +535,133 @@ test('a probe that cannot read the installed commit reports unknown instead of b
     const view = await service.check('pkg', { force: true })
     assert.equal(view.check.state, 'unknown')
     assert.equal(view.check.error.kind, 'no-commit')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a lockfile resolved over SSH makes the update install through SSH', async () => {
+  const dir = await makeProfile()
+  try {
+    // 模拟 pnpm 对私有仓库的落盘：importers 里是 git+ssh 地址。
+    await writeFile(join(dir, 'pnpm-lock.yaml'), [
+      "lockfileVersion: '9.0'",
+      '',
+      'importers:',
+      '',
+      '  .:',
+      '    dependencies:',
+      '      pkg:',
+      '        specifier: github:owner/repo#aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      `        version: git+ssh://git@github.com/owner/repo.git#${OLD}`,
+      '',
+      'packages:',
+      '',
+    ].join('\n'), 'utf8')
+    const manager = fakeManager(dir, [bundleFor('pkg')])
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      hmr: true,
+      probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'ssh' }),
+    })
+    await service.ready
+    const view = (await service.list())[0]
+    assert.equal(view.installed.transport, 'ssh')
+    const started = await service.update('pkg', { expectedCommit: OLD, targetCommit: NEW })
+    await waitJob(service, started.jobId)
+    assert.equal(
+      manager.calls.install[0].spec,
+      `pkg@git+ssh://git@github.com/owner/repo.git#${NEW}`,
+    )
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a pinned spec discovers the branch its installed commit belongs to', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg', `github:owner/repo#${OLD}`)])
+    let listed = 0
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      probeRefs: async () => {
+        listed += 1
+        return {
+          ok: true,
+          head: NEW,
+          defaultBranch: 'main',
+          heads: [{ name: 'main', commit: NEW }, { name: 'dsh-plugin', commit: OLD }],
+          transport: 'ssh',
+        }
+      },
+      probe: async () => { throw new Error('不应该按 HEAD 探测') },
+    })
+    await service.ready
+    const view = await service.check('pkg', { force: true })
+    assert.equal(listed, 1)
+    assert.equal(view.check.ref, 'dsh-plugin')
+    assert.equal(view.check.state, 'current')
+    assert.equal(view.check.latest, OLD)
+    const state = await readState(dir)
+    assert.equal(state.packages.pkg.trackedRef, 'dsh-plugin')
+    // 之后的视图直接显示真实跟踪分支。
+    assert.equal((await service.view('pkg')).ref, 'dsh-plugin')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('without a matching branch or configured ref, discovery falls back to HEAD', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg', `github:owner/repo#${OLD}`)])
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      probeRefs: async () => ({
+        ok: true,
+        head: NEW,
+        defaultBranch: 'main',
+        heads: [{ name: 'main', commit: NEW }, { name: 'dsh-plugin', commit: 'c'.repeat(40) }],
+        transport: 'https',
+      }),
+    })
+    await service.ready
+    const view = await service.check('pkg', { force: true })
+    assert.equal(view.check.ref, 'HEAD')
+    assert.equal(view.check.state, 'behind')
+    assert.equal(view.check.latest, NEW)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a configured trackedRef overrides HEAD for a pinned spec', async () => {
+  const dir = await makeProfile()
+  const latest = 'c'.repeat(40)
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg', `github:owner/repo#${OLD}`)])
+    const seen = []
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({ trackedRefs: { pkg: 'dsh-plugin' } }),
+      probe: async (source, options) => {
+        seen.push(options.ref)
+        return { ok: true, commit: latest, ref: options.ref, transport: 'ssh' }
+      },
+    })
+    await service.ready
+    const view = await service.check('pkg', { force: true })
+    assert.deepEqual(seen, ['dsh-plugin'])
+    assert.equal(view.check.ref, 'dsh-plugin')
+    assert.equal(view.check.state, 'behind')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

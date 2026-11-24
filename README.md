@@ -59,6 +59,8 @@
     sshFallback: true              # HTTPS 读不到时改用 SSH 再试
     probeTimeoutMs: 15000          # 单次 git ls-remote 超时
     cacheTtlMs: 600000             # 检查结果缓存时长
+    trackedRefs:                   # 包名 → 跟踪分支；保存的 spec 被钉成 commit 后用它指明分支
+      '@local/wechat-worklog': dsh-plugin
     backgroundCheckMs: 0           # 后台巡检间隔；0 关闭（默认，页面打开时会自动检查）
     backgroundCheckStartMs: 60000  # 开启后台巡检时，启动多久后首次巡检
 ```
@@ -68,6 +70,8 @@
 - 更新会改写依赖声明（钉 commit 模式），并短暂卸载该插件；重装会把 bundle 重新追加到 `dsh.profile.bundles` 末尾，可能改变配置优先级（宿主既有行为）。
 - 不能在更新前预检新版本与当前 DSH 的兼容性（目标 commit 的清单不联网读），改为装后校验 + 自动回滚。
 - 需要本机有 `git`；只用 `git ls-remote` 读 ref，不 fetch 整个仓库、不调 GitHub API。
+- 私有仓库按锁文件/探测结果改用本机 SSH key，并以「包名@git+ssh://…」安装：既避开 pnpm 11 在「仓库名 ≠ 包名 + commit」时把 fragment 混进 alias 的 `ERR_PNPM_INVALID_DEPENDENCY_NAME`，也不会卡在 HTTPS 凭据提示。
+- 保存的 spec 是 commit 时，工具会用「已装 commit 对上哪个分支的尖端」反查跟踪分支；如果分支已经往前走、对不上，需要在 `trackedRefs` 里显式写分支（否则退回按远端 HEAD 判断）。
 - 「那一行不消失」由宿主内存里的任务快照保证；宿主进程重启后，若某插件确实没装回来，行会消失（这是真实状态）。
 - 设置页是唯一入口：关掉设置期间任务继续跑，但没有全局 toast；重开设置后从任务状态恢复进度。
 - 宿主不提供重启服务，重启 DSH 只能由用户手动完成。
