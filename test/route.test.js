@@ -27,8 +27,8 @@ function fakeService(overrides = {}) {
         elapsedMs: 1200,
       }
       : undefined),
-    cancel: () => { calls.push(['cancel']); return { cancelled: true } },
-    activeJob: () => null,
+    cancel: target => { calls.push(['cancel', target]); return { cancelled: true } },
+    activeJobs: () => [],
     ...overrides,
   }
 }
@@ -52,7 +52,7 @@ test('GET a package view and the whole list', async () => {
   const list = await route.fetch(new Request(`http://localhost${ROUTE_PATH}`))
   const listBody = await list.json()
   assert.equal(listBody.packages.length, 1)
-  assert.equal(listBody.activeJob, null)
+  assert.deepEqual(listBody.activeJobs, [])
 
   const missing = await route.fetch(new Request(`http://localhost${ROUTE_PATH}?package=nope`))
   assert.equal(missing.status, 404)
@@ -102,9 +102,10 @@ test('POST update requires confirm and passes the expected commit', async () => 
 test('POST cancel, invalid action and missing fields', async () => {
   const service = fakeService()
   const route = createRoute(service, config)
-  const cancelled = await route.fetch(post({ action: 'cancel', confirm: true }))
+  const cancelled = await route.fetch(post({ action: 'cancel', confirm: true, jobId: 'job-1' }))
   assert.equal(cancelled.status, 200)
   assert.equal((await cancelled.json()).cancelled, true)
+  assert.deepEqual(service.calls.at(-1), ['cancel', { jobId: 'job-1' }])
 
   const invalid = await route.fetch(post({ action: 'nope', package: 'pkg' }))
   assert.equal(invalid.status, 400)

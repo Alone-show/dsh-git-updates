@@ -252,11 +252,11 @@ test('cancel asks the host to stop the running installation', async () => {
       hmr: true,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
-    service.cancel()
+    service.cancel({ jobId: 'missing' })
     assert.equal(manager.calls.cancelled, undefined)
 
     const started = await service.update('pkg', {})
-    const cancelled = service.cancel()
+    const cancelled = service.cancel({ jobId: started.jobId })
     assert.equal(cancelled.cancelled, true)
     assert.equal(manager.calls.cancelled, 1)
     await waitJob(service, started.jobId)
@@ -662,6 +662,186 @@ test('a configured trackedRef overrides HEAD for a pinned spec', async () => {
     assert.deepEqual(seen, ['dsh-plugin'])
     assert.equal(view.check.ref, 'dsh-plugin')
     assert.equal(view.check.state, 'behind')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+/**
+ * 造一个能同时装两个包的临时 profile。
+ * @returns {Promise<string>} 目录。
+ */
+async function makeTwoPackageProfile() {
+  const dir = await mkdtemp(join(tmpdir(), 'gu-concurrent-'))
+  for (const name of ['pkg', 'pkg2']) {
+    await mkdir(join(dir, 'node_modules', name), { recursive: true })
+    await writeFile(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({
+      name, version: '1.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } },
+    }), 'utf8')
+  }
+  const lock = [
+    "lockfileVersion: '9.0'",
+    '',
+    'importers:',
+    '',
+    '  .:',
+    '    dependencies:',
+    '      pkg:',
+    '        specifier: github:owner/pkg',
+    `        version: https://codeload.github.com/owner/pkg/tar.gz/${OLD}`,
+    '      pkg2:',
+    '        specifier: github:owner/pkg2',
+    `        version: https://codeload.github.com/owner/pkg2/tar.gz/${OLD}`,
+    '',
+    'packages:',
+    '',
+  ].join('\n')
+  await writeFile(join(dir, 'pnpm-lock.yaml'), lock, 'utf8')
+  return dir
+}
+
+/**
+ * 同时管理两个包的假插件管理器。
+ * @param {string} dir profile 目录。
+ * @param {Map<string, Promise<void>>} gates 包名 → 安装闸门。
+ * @returns {any} 假管理器。
+ */
+function multiManager(dir, gates) {
+  const calls = { remove: [], install: [], cancelled: [], commits: new Map([['pkg', OLD], ['pkg2', OLD]]) }
+  const installed = new Set(['pkg', 'pkg2'])
+  const lock = () => [
+    "lockfileVersion: '9.0'",
+    '',
+    'importers:',
+    '',
+    '  .:',
+    '    dependencies:',
+    ...['pkg', 'pkg2'].flatMap(name => [
+      `      ${name}:`,
+      `        specifier: github:owner/${name}`,
+      `        version: https://codeload.github.com/owner/${name}/tar.gz/${calls.commits.get(name)}`,
+    ]),
+    '',
+    'packages:',
+    '',
+  ].join('\n')
+  return {
+    calls,
+    async listBundles() {
+      return [...installed].map(name => bundleFor(name, `github:owner/${name}`))
+    },
+    async removeBundle(name) {
+      calls.remove.push(name)
+      installed.delete(name)
+      return { changed: true, application: 'applied', stage: 'remove', target: name }
+    },
+    async installBundle(spec, options = {}) {
+      const name = spec.startsWith('pkg2@') ? 'pkg2' : 'pkg'
+      calls.install.push({ name, spec, options })
+      const gate = gates.get(name)
+      if (gate !== undefined) await gate
+      const commit = /#([0-9a-f]{40})/.exec(spec)?.[1] ?? OLD
+      calls.commits.set(name, commit)
+      installed.add(name)
+      await writeFile(join(dir, 'pnpm-lock.yaml'), lock(), 'utf8')
+      await writeFile(join(dir, 'node_modules', name, 'package.json'), JSON.stringify({
+        name, version: '2.0.0', dsh: { bundle: { patch: './cordis.patch.yml' } },
+      }), 'utf8')
+      return { changed: true, application: 'applied', stage: 'install', target: spec }
+    },
+    async cancelInstall(requestId) {
+      calls.cancelled.push(requestId)
+      return { status: 'cancelled' }
+    },
+  }
+}
+
+test('two different plugins update at the same time', async () => {
+  const dir = await makeTwoPackageProfile()
+  const gates = new Map()
+  for (const name of ['pkg', 'pkg2']) {
+    let release
+    gates.set(name, new Promise(resolve => { release = resolve }))
+    gates.set(`${name}:release`, release)
+  }
+  try {
+    const manager = multiManager(dir, gates)
+    const service = createService({
+      manager, profileDir: dir, config: resolveConfig({ maxConcurrentUpdates: 3 }), hmr: true,
+    })
+    await service.ready
+    const first = await service.update('pkg', { expectedCommit: OLD, targetCommit: NEW })
+    const second = await service.update('pkg2', { expectedCommit: OLD, targetCommit: 'd'.repeat(40) })
+    assert.equal(service.activeJobs().length, 2)
+    // 同一个包仍只允许一个任务。
+    await assert.rejects(
+      () => service.update('pkg', { expectedCommit: OLD, targetCommit: NEW }),
+      error => error.code === 'JOB_RUNNING',
+    )
+    gates.get('pkg:release')()
+    gates.get('pkg2:release')()
+    const [jobA, jobB] = await Promise.all([
+      waitJob(service, first.jobId),
+      waitJob(service, second.jobId),
+    ])
+    assert.equal(jobA.result.verified, true)
+    assert.equal(jobB.result.verified, true)
+    assert.equal(service.activeJobs().length, 0)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('a concurrency limit and targeted cancel only affect their own job', async () => {
+  const dir = await makeTwoPackageProfile()
+  let releaseA
+  let releaseB
+  const gates = new Map([
+    ['pkg', new Promise(resolve => { releaseA = resolve })],
+    ['pkg2', new Promise(resolve => { releaseB = resolve })],
+  ])
+  try {
+    const manager = multiManager(dir, gates)
+    const service = createService({
+      manager, profileDir: dir, config: resolveConfig({ maxConcurrentUpdates: 1 }), hmr: true,
+    })
+    await service.ready
+    const first = await service.update('pkg', { expectedCommit: OLD, targetCommit: NEW })
+    await assert.rejects(
+      () => service.update('pkg2', { expectedCommit: OLD, targetCommit: 'd'.repeat(40) }),
+      error => error.code === 'JOB_LIMIT',
+    )
+    releaseA()
+    await waitJob(service, first.jobId)
+    releaseB()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('cancelling one job leaves the other running', async () => {
+  const dir = await makeTwoPackageProfile()
+  let releaseA
+  let releaseB
+  const gates = new Map([
+    ['pkg', new Promise(resolve => { releaseA = resolve })],
+    ['pkg2', new Promise(resolve => { releaseB = resolve })],
+  ])
+  try {
+    const manager = multiManager(dir, gates)
+    const service = createService({
+      manager, profileDir: dir, config: resolveConfig({ maxConcurrentUpdates: 3 }), hmr: true,
+    })
+    await service.ready
+    const first = await service.update('pkg', { expectedCommit: OLD, targetCommit: NEW })
+    const second = await service.update('pkg2', { expectedCommit: OLD, targetCommit: 'd'.repeat(40) })
+    const cancelled = service.cancel({ jobId: first.jobId })
+    assert.equal(cancelled.cancelled, true)
+    assert.equal(manager.calls.cancelled.length, 1)
+    assert.equal(service.job(second.jobId).status, 'running')
+    releaseA()
+    releaseB()
+    await Promise.all([waitJob(service, first.jobId), waitJob(service, second.jobId)])
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

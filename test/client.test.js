@@ -74,8 +74,8 @@ test('summarize counts the plugins behind and pending a restart', () => {
     { package: 'a', check: { state: 'behind' }, pendingRestart: { commit: 'a'.repeat(40) } },
   ], null)
   assert.equal(overlap.total, 1)
-  assert.equal(summary.active, null)
-  assert.equal(client.__test.summarize(views, { packageName: 'a' }).active, 'a')
+  assert.deepEqual(Array.from(summary.active), [])
+  assert.deepEqual(Array.from(client.__test.summarize(views, [{ packageName: 'a' }, { package: 'b' }]).active), ['a', 'b'])
 })
 
 test('stepRows labels every step and shows durations', () => {
@@ -221,4 +221,31 @@ test('the settings section renders its loading state without a browser', () => {
   const icon = client.__test.PluginUpdatesIcon({ size: 16 })
   assert.equal(icon.type, 'svg')
   assert.equal(icon.props.width, 16)
+})
+
+test('rowActions gates only the row itself, never the whole page', () => {
+  const { rowActions } = client.__test
+  const behind = {
+    package: 'a',
+    installed: { commit: 'a'.repeat(40) },
+    check: { state: 'behind', latest: 'b'.repeat(40) },
+  }
+  assert.deepEqual({ ...rowActions(behind) }, { canCheck: true, canUpdate: true, canCancel: false })
+  // 这一行自己在检查：只影响这一行。
+  assert.equal(rowActions(behind, { checking: true }).canUpdate, false)
+  // 这一行自己在更新：只影响这一行，别的行照常可以检查/更新。
+  assert.equal(rowActions({ ...behind, job: { status: 'running' } }).canUpdate, false)
+  assert.equal(rowActions({ ...behind, job: { status: 'running' } }).canCheck, false)
+  assert.equal(rowActions({ ...behind, job: { status: 'running' } }).canCancel, true)
+  // 其它行的检查/更新状态不在这个函数的输入里，因此不会连带禁用。
+  assert.equal(rowActions({ ...behind, job: { status: 'done' } }).canUpdate, true)
+  assert.equal(rowActions({ ...behind, installedMissing: true }).canCheck, false)
+  assert.equal(rowActions({ ...behind, self: true }).canUpdate, false)
+  assert.equal(rowActions({ ...behind, check: { state: 'current' } }).canUpdate, false)
+})
+
+test('summarize lists every concurrent job', () => {
+  const { summarize } = client.__test
+  const summary = summarize([], [{ package: 'a' }, { package: 'b' }])
+  assert.deepEqual(Array.from(summary.active), ['a', 'b'])
 })

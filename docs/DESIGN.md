@@ -2,7 +2,7 @@
 
 > 目标：给「从 GitHub / Git 拉取安装的插件」补上检查更新与一键更新的能力，入口放在**设置**里。
 > 运行环境：DSH Desktop（`next` 通道，profile=`desktop`，DSH `0.2.2-rc.5`），Linux，Node 22，pnpm 11.28.5。
-> 文档日期：2026-11-24 · 插件版本：0.3.1（`link:/home/my/Downloads/dsh-git-updates`）
+> 文档日期：2026-11-24 · 插件版本：0.4.0（`link:/home/my/Downloads/dsh-git-updates`）
 >
 > **0.3.0 相对 0.2.0 的变更**：界面从「插件详情页 + 插件页标签 + 全局浮层」收敛为**设置里的独立一栏**（`settings.section`），其余页面的控件全部移除；新增「更新时那一行不能消失」的粘性行机制（`lib/sticky.js`）；任务视图补齐四步状态、每步耗时与实时日志；后台巡检默认关闭。
 
@@ -199,7 +199,9 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
   4. 客户端上报的 `expectedCommit` 必须与当前一致（`STALE_VIEW`）；
   5. 已有任务 → `JOB_RUNNING`；未带目标时先检查（`CHECK_FAILED` / `ALREADY_LATEST`）；
   6. 起任务，任务体调 `runUpdate`。
+- `update` 若同一个包已有任务，先于 `describe()` 拒绝（包可能已被卸载，否则会误报 `NOT_MANAGED`）。
 - 任务结束后写 `lastCheck`（成功时置 `current`）与 `lastUpdate`；`restart-required` 写 `restartPending`。
+- `list()` 用 `mergeSticky(views, runner.entries())` 把每个包最近的任务挂到行上；路由另返回 `activeJobs` 供页首显示并行任务数。
 - `onInstallLog(chunk)` / `onInstallState(progress)`：仅当 `requestId` 与当前任务一致时追加日志。
 
 ### 7.6 更新编排（`lib/update.js`）
@@ -213,7 +215,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ### 7.7 任务（`lib/jobs.js`）
 
-- 全局单任务：active 存在时新更新返回 `JOB_RUNNING`（409）。
+- 每个包同时最多一个任务（同包再点 → `JOB_RUNNING` 409）；不同包可以并行，受 `maxConcurrentUpdates` 限制（超出 → `JOB_LIMIT` 409）。
 - 任务视图：`{id, packageName, requestId, step, status, message, startedAt, finishedAt, elapsedMs, steps[], logs[], result, error, snapshot}`。
 - `steps` 固定四步 `checking/removing/installing/verifying`，每步 `status/startedAt/finishedAt/durationMs`。
 - `logs` 最多 50 条（`{at, level, message}`）；`addLog(requestId, …)` 供宿主事件追加。
@@ -236,7 +238,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `GET ?jobId=<id>` | 任务进度 |
 | `POST {action:'check', package, force?}` | 强制检查 |
 | `POST {action:'update', package, confirm:true, expectedCommit?, targetCommit?}` | 起更新任务 |
-| `POST {action:'cancel', confirm:true}` | 取消当前任务 |
+| `POST {action:'cancel', confirm:true, jobId, package?}` | 只取消指定任务 |
 
 错误码 → HTTP：`NOT_FOUND/NOT_MANAGED` 404、`STALE_VIEW/ALREADY_LATEST/UNKNOWN_INSTALLED_COMMIT/JOB_RUNNING/SELF_UPDATE` 409、`CHECK_FAILED` 502、`INVALID_BODY/INVALID_ACTION` 400、`BODY_TOO_LARGE` 413、`INTERNAL` 500。POST 只接受 `content-type: application/json`。
 
@@ -248,6 +250,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `sshFallback` | true | HTTPS 凭据失败时改试 SSH |
 | `pinCommits` | true | 更新后是否钉到具体 commit |
 | `cacheTtlMs` | 600000 | 检查结果缓存 |
+| `maxConcurrentUpdates` | 3 | 同时更新的插件数上限（1–8） |
 | `trackedRefs` | `{}` | 包名 → 跟踪分支；钉 commit 后分支已前进、无法按已装 commit 反查时用它 |
 | `backgroundCheckMs` | 0 | 后台巡检间隔；0 关闭 |
 | `backgroundCheckStartMs` | 60000 | 开启巡检时的首次延迟 |
@@ -285,7 +288,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | 有更新 | 琥珀徽标 + 上游 commit + compare 链接 + 「更新到 `<sha>`」 |
 | 确认态（8s） | 按钮变「确认更新到 `<sha>`」，描边/文字转 warning，8 秒内再点执行 |
 | 检查中 | 行内徽标「检查中」+ 按钮「检查中…」+ 页首 `n/m` |
-| 更新中 | 四步状态条（含每步耗时）、实时日志、整体耗时、「取消更新」；行按钮禁用 |
+| 更新中 | 该行四步状态条（含每步耗时）、实时日志、整体耗时、「取消更新」；只禁用这一行的按钮，其它行照常检查/更新 |
 | 完成 | 绿色横幅「已更新到 `<sha>`，已生效」或「重启 DSH 后生效」+ 指引 |
 | 失败并回滚 | 红色横幅 + 原因 + 「已回滚到更新前的版本（`<sha>`）」 |
 | 回滚失败 | 红色横幅「该插件当前未安装」；该行保留（`sticky`） |
@@ -295,9 +298,9 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ### 8.4 交互流程
 
-1. **打开即检查**：先读列表（快），对未检查/过期行自动探测；不阻塞首屏。
+1. **打开即检查**：先读列表（快），对未检查/过期行自动探测，最多 3 行并行；每行独立完成，某行查完即可更新，不必等整批。
 2. **二次确认**：点「更新」→ 按钮变「确认更新」→ 8 秒内再点才执行（`CONFIRM_MS=8000`）。
-3. **进度**：任务起后忙时 900ms、空闲 15s 轮询 `GET`；`job.steps/logs` 驱动四步条与日志，可取消。
+3. **进度**：任务起后忙时 900ms、空闲 15s 轮询 `GET`；每行的 `job.steps/logs` 驱动自己的四步条与日志。多个插件可同时更新，每行有自己的「取消更新」，按 `jobId` 只停那一行。
 4. **结果**：成功刷新视图并提示生效/重启；失败展示原因与回滚结论。
 5. **刷新要求**：宿主数据改完立即读得到（lockfile），但**新代码要重启 DSH**；浏览器侧改 `client.js` 后需刷新页面。
 
@@ -326,7 +329,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ## 10. 测试与验证
 
-### 10.1 单测（`node --test "test/*.test.js"`，100 个全过）
+### 10.1 单测（`node --test "test/*.test.js"`，106 个全过）
 
 | 文件 | 覆盖 |
 | --- | --- |
@@ -370,8 +373,9 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 6. **上游「落后 vs 回退」分不清**：`git ls-remote` 不带历史，只判断「不同」，页面用中立措辞并给 compare 链接。
 7. **私有仓库依赖本机凭据**：HTTPS token 或 SSH key，二者皆无时只能报「无法检查」。
 8. **不自我更新**：本工具若以 Git 来源出现，只提示到插件页更新，否则卸载自身会让设置页与路由一起消失。
-9. **钉 commit 后可能丢失分支**：已装 commit 不再等于任何分支尖端时无法自动反查，需要 `trackedRefs` 显式指定；否则退回按远端 HEAD 判断（可能把仓库默认分支误当成插件分支）。
-10. **pnpm 别名限制**：Git 依赖一律用「包名@地址」显式安装；其它工具若直接 `pnpm add github:owner/repo#sha` 仍可能触发 pnpm 11 的 alias 报错。
+9. **并行更新的排队**：宿主用 profile 写锁把真正的 pnpm/卸载/安装串行执行，并行只保证各行进度与回滚互不阻塞；同时更新很多插件时后面的任务会等在锁上。
+10. **钉 commit 后可能丢失分支**：已装 commit 不再等于任何分支尖端时无法自动反查，需要 `trackedRefs` 显式指定；否则退回按远端 HEAD 判断（可能把仓库默认分支误当成插件分支）。
+11. **pnpm 别名限制**：Git 依赖一律用「包名@地址」显式安装；其它工具若直接 `pnpm add github:owner/repo#sha` 仍可能触发 pnpm 11 的 alias 报错。
 9. **多 profile**：状态文件按 profile 隔离；插件本身也只服务当前 profile。
 
 ## 12. 后续可做的事
@@ -407,7 +411,7 @@ dsh-git-updates/
 ├── docs/DETAIL.md         # 插件详情页文档
 ├── docs/DESIGN.md         # 本文档
 ├── icon.svg
-└── test/*.test.js         # 100 个单测
+└── test/*.test.js         # 106 个单测
 ```
 
 ### B. 安装与观察

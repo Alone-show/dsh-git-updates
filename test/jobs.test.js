@@ -100,20 +100,38 @@ test('cancelling flips the job to failed once the run settles', async () => {
     assert.equal(signal.aborted, true)
     return { verified: false, error: { code: 'CANCELLED', message: '已取消' } }
   })
-  assert.equal(runner.cancel(), true)
+  assert.equal(runner.cancel(job.id) !== undefined, true)
   assert.equal(runner.view(job.id).status, 'cancelling')
   const done = await settled(runner, job.id)
   assert.equal(done.status, 'failed')
   assert.equal(done.result.error.code, 'CANCELLED')
-  assert.equal(runner.cancel(), false)
+  assert.equal(runner.cancel(job.id), undefined)
 })
 
-test('a second job is refused while one runs', async () => {
+test('the same package is refused while its job runs, other packages are allowed', async () => {
   const runner = new JobRunner()
   let release
   const gate = new Promise(resolve => { release = resolve })
   runner.start('pkg', async () => { await gate; return { verified: true } })
-  assert.throws(() => runner.start('other', async () => ({ verified: true })), error => error.code === 'JOB_RUNNING')
+  assert.throws(() => runner.start('pkg', async () => ({ verified: true })), error => error.code === 'JOB_RUNNING')
+  const other = runner.start('other', async () => { await gate; return { verified: true } })
+  assert.equal(runner.runningCount(), 2)
+  assert.deepEqual(runner.activeJobs().map(job => job.packageName).sort(), ['other', 'pkg'])
+  release()
+  await settled(runner, other.id)
+  assert.equal(runner.runningCount(), 0)
+})
+
+test('a concurrency limit refuses extra jobs across packages', async () => {
+  const runner = new JobRunner()
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  runner.start('a', async () => { await gate; return { verified: true } })
+  runner.start('b', async () => { await gate; return { verified: true } }, { maxConcurrent: 2 })
+  assert.throws(
+    () => runner.start('c', async () => ({ verified: true }), { maxConcurrent: 2 }),
+    error => error.code === 'JOB_LIMIT',
+  )
   release()
 })
 

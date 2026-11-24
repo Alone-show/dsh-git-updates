@@ -34,6 +34,8 @@ window.__ModuleLoader__.load({
     const POLL_BUSY_MS = 900;
     /** 空闲时的轮询间隔（只读本机路由，不发网络请求）。 */
     const POLL_IDLE_MS = 15000;
+    /** 同时检查几行（检查是只读探测，互不阻塞）。 */
+    const CHECK_CONCURRENCY = 3;
     /** 二次确认的有效时间。 */
     const CONFIRM_MS = 8000;
     /** 前端兜底：列表里暂时缺失的行再保留多久。 */
@@ -51,6 +53,8 @@ window.__ModuleLoader__.load({
       'page.retry': '重试',
       'page.checkAll': '全部检查',
       'page.checkingProgress': '正在检查 {done}/{total}',
+      'page.checkingCount': '正在检查 {count} 个',
+      'summary.updatingCount': '正在更新 {count} 个',
       'summary.behind': '{count} 个有更新',
       'summary.pending': '{count} 个待重启',
       'summary.allCurrent': '全部已是最新',
@@ -135,6 +139,8 @@ window.__ModuleLoader__.load({
       'page.retry': 'Retry',
       'page.checkAll': 'Check all',
       'page.checkingProgress': 'Checking {done}/{total}',
+      'page.checkingCount': 'Checking {count}',
+      'summary.updatingCount': 'Updating {count}',
       'summary.behind': '{count} update(s) available',
       'summary.pending': '{count} waiting for restart',
       'summary.allCurrent': 'All up to date',
@@ -274,10 +280,10 @@ window.__ModuleLoader__.load({
     /**
      * 汇总列表状态，供页首文案使用。
      * @param {any[]} views 列表。
-     * @param {any} activeJob 当前任务。
-     * @returns {{ behind: string[], pending: string[], total: number, active: string | null }} 汇总。
+     * @param {any[] | any} [activeJobs] 正在跑的任务（也兼容传单个任务）。
+     * @returns {{ behind: string[], pending: string[], total: number, active: Array<string | null> }} 汇总。
      */
-    function summarize(views, activeJob) {
+    function summarize(views, activeJobs = []) {
       const behind = [];
       const pending = [];
       for (const view of Array.isArray(views) ? views : []) {
@@ -285,10 +291,28 @@ window.__ModuleLoader__.load({
         if (view?.pendingRestart !== undefined && view?.pendingRestart !== null) pending.push(view.package);
       }
       const total = new Set([...behind, ...pending]).size;
-      const activeName = activeJob === null || activeJob === undefined
-        ? null
-        : (activeJob.package ?? activeJob.packageName ?? null);
-      return { behind, pending, total, active: activeName };
+      const jobs = Array.isArray(activeJobs) ? activeJobs : (activeJobs === null || activeJobs === undefined ? [] : [activeJobs]);
+      return { behind, pending, total, active: jobs.map(job => job?.package ?? job?.packageName ?? null) };
+    }
+
+    /**
+     * 一行能做什么：只看这一行自己的状态，不受其它行检查/更新的影响。
+     * @param {any} view 行。
+     * @param {{ checking?: boolean }} [local] 这一行是否正在检查。
+     * @returns {{ canCheck: boolean, canUpdate: boolean, canCancel: boolean }} 能力。
+     */
+    function rowActions(view, local = {}) {
+      const job = view?.job;
+      const running = job?.status === 'running' || job?.status === 'cancelling';
+      const checking = local.checking === true;
+      const missing = view?.installedMissing === true;
+      return {
+        canCheck: !checking && !running && !missing,
+        canUpdate: !checking && !running && !missing && view?.self !== true
+          && view?.check?.state === 'behind'
+          && typeof view?.installed?.commit === 'string',
+        canCancel: running,
+      };
     }
 
     /**
@@ -578,10 +602,9 @@ window.__ModuleLoader__.load({
       const resolveText = props.resolveText ?? (value => (typeof value === 'string' ? value : ''));
       const [phase, setPhase] = useState('loading');
       const [views, setViews] = useState([]);
-      const [activeJob, setActiveJob] = useState(null);
+      const [activeJobs, setActiveJobs] = useState([]);
       const [error, setError] = useState(null);
       const [checking, setChecking] = useState({});
-      const [checkProgress, setCheckProgress] = useState(null);
       const [armed, setArmed] = useState(null);
       const [rowErrors, setRowErrors] = useState({});
       const [openLogs, setOpenLogs] = useState({});
@@ -601,7 +624,7 @@ window.__ModuleLoader__.load({
           if (mounted.current !== true) return data;
           const incoming = Array.isArray(data.packages) ? data.packages : [];
           setViews(previous => mergeViews(previous, incoming, Date.now()));
-          setActiveJob(data.activeJob ?? null);
+          setActiveJobs(Array.isArray(data.activeJobs) ? data.activeJobs : []);
           setPhase('ready');
           setError(null);
           return data;
@@ -621,48 +644,48 @@ window.__ModuleLoader__.load({
        * @returns {Promise<void>} 完成后返回。
        */
       const checkRows = async (names, force = true) => {
-        const list = (Array.isArray(names) ? names : []).filter(name => typeof name === 'string' && name !== '');
+        const list = [...new Set((Array.isArray(names) ? names : []).filter(name => typeof name === 'string' && name !== ''))];
         if (list.length === 0) return;
         setChecking(previous => {
           const next = { ...previous };
           for (const name of list) next[name] = true;
           return next;
         });
-        let done = 0;
-        setCheckProgress({ done, total: list.length });
-        for (const name of list) {
-          try {
-            const data = await request('POST', { action: 'check', package: name, force });
-            if (mounted.current === true && data?.package?.package !== undefined) {
-              const checked = data.package;
-              if (checked.applicable !== false) {
-                setViews(previous => {
-                  const rows = previous.map(view => (
+        const queue = [...list];
+        const worker = async () => {
+          while (mounted.current === true) {
+            const name = queue.shift();
+            if (name === undefined) return;
+            try {
+              const data = await request('POST', { action: 'check', package: name, force });
+              if (mounted.current === true && data?.package?.package !== undefined) {
+                const checked = data.package;
+                if (checked.applicable !== false) {
+                  setViews(previous => previous.map(view => (
                     view.package === checked.package
                       ? { ...checked, job: view.job, __seenAt: Date.now() }
                       : view
-                  ));
-                  return rows;
+                  )));
+                }
+              }
+            } catch (caught) {
+              if (mounted.current === true) {
+                setRowErrors(previous => ({ ...previous, [name]: caught }));
+              }
+            } finally {
+              if (mounted.current === true) {
+                setChecking(previous => {
+                  const next = { ...previous };
+                  delete next[name];
+                  return next;
                 });
               }
             }
-          } catch (caught) {
-            if (mounted.current === true) {
-              setRowErrors(previous => ({ ...previous, [name]: caught }));
-            }
-          } finally {
-            done += 1;
-            if (mounted.current === true) {
-              setChecking(previous => {
-                const next = { ...previous };
-                delete next[name];
-                return next;
-              });
-              setCheckProgress({ done, total: list.length });
-            }
           }
-        }
-        if (mounted.current === true) setCheckProgress(null);
+        };
+        await Promise.all(
+          Array.from({ length: Math.min(CHECK_CONCURRENCY, list.length) }, () => worker()),
+        );
       };
 
       /** 首次加载：取列表，把过期/未检查的行自动查一遍。 */
@@ -690,7 +713,7 @@ window.__ModuleLoader__.load({
       }, []);
 
       const checkingCount = Object.keys(checking).length;
-      const busy = activeJob !== null || checkingCount > 0;
+      const busy = activeJobs.length > 0 || checkingCount > 0;
 
       useEffect(() => {
         const timer = setInterval(() => { void refreshRef.current?.(); }, busy ? POLL_BUSY_MS : POLL_IDLE_MS);
@@ -698,10 +721,10 @@ window.__ModuleLoader__.load({
       }, [busy]);
 
       useEffect(() => {
-        if (activeJob === null) return undefined;
+        if (activeJobs.length === 0) return undefined;
         const timer = setInterval(() => setNow(Date.now()), 1000);
         return () => clearInterval(timer);
-      }, [activeJob?.id]);
+      }, [activeJobs.length > 0]);
 
       /**
        * 点一次「更新」：第一次进入确认态，8 秒内再点才真的更新。
@@ -747,7 +770,10 @@ window.__ModuleLoader__.load({
           });
           if (mounted.current !== true) return;
           if (data?.job !== undefined && data.job !== null) {
-            setActiveJob(data.job);
+            setActiveJobs(previous => [
+              ...previous.filter(job => job.package !== data.job.package),
+              data.job,
+            ]);
             setViews(previous => previous.map(row => (
               row.package === view.package ? { ...row, job: data.job } : row
             )));
@@ -760,17 +786,26 @@ window.__ModuleLoader__.load({
         }
       };
 
-      /** 取消当前更新。 */
-      const cancelUpdate = async () => {
+      /**
+       * 取消某一行的更新；只停这一行的任务，不影响其它并行任务。
+       * @param {any} job 该行的任务摘要。
+       * @returns {Promise<void>} 完成后返回。
+       */
+      const cancelUpdate = async job => {
         try {
-          await request('POST', { action: 'cancel', confirm: true });
+          await request('POST', {
+            action: 'cancel',
+            confirm: true,
+            ...(typeof job?.id === 'string' ? { jobId: job.id } : {}),
+            ...(typeof job?.package === 'string' ? { package: job.package } : {}),
+          });
         } catch (caught) {
           setError(caught);
         }
         await refresh();
       };
 
-      const summary = summarize(views, activeJob);
+      const summary = summarize(views, activeJobs);
 
       const header = h('header', { key: 'head', className: 'gu-head' }, [
         h('h2', { key: 'title', className: 'gu-title' }, t('page.title')),
@@ -782,37 +817,30 @@ window.__ModuleLoader__.load({
           key: 'checkAll',
           type: 'button',
           className: 'gu-btn',
-          disabled: busy || phase !== 'ready' || views.length === 0,
-          onClick: () => { void checkRows(views.map(view => view.package), true); },
+          disabled: phase !== 'ready' || views.length === 0,
+          onClick: () => {
+            const names = views
+              .filter(view => view.job?.status !== 'running'
+                && view.job?.status !== 'cancelling'
+                && view.installedMissing !== true
+                && checking[view.package] !== true)
+              .map(view => view.package);
+            void checkRows(names, true);
+          },
         }, h(Glyph, { key: 'icon', paths: ICONS.refresh }), t('page.checkAll')),
-        checkProgress === null
-          ? null
-          : h('span', { key: 'progress', className: 'gu-summary' }, t('page.checkingProgress', {
-            done: String(checkProgress.done),
-            total: String(checkProgress.total),
-          })),
-        activeJob !== null
-          ? h('span', { key: 'busy', className: 'gu-summary' }, t('summary.busy', { name: activeJob.package ?? '' }))
+        checkingCount > 0
+          ? h('span', { key: 'checking', className: 'gu-summary' }, t('page.checkingCount', { count: String(checkingCount) }))
           : null,
-        activeJob !== null
-          ? null
-          : (summary.total === 0 && phase === 'ready' && views.length > 0
-            ? h('span', { key: 'current', className: 'gu-summary' }, t('summary.allCurrent'))
-            : h('span', { key: 'summary', className: 'gu-summary' }, [
-              summary.behind.length > 0 ? t('summary.behind', { count: String(summary.behind.length) }) : '',
-              summary.behind.length > 0 && summary.pending.length > 0 ? ' · ' : '',
-              summary.pending.length > 0 ? t('summary.pending', { count: String(summary.pending.length) }) : '',
-            ].filter(Boolean).join(''))),
-        activeJob !== null
-          ? h('button', {
-            key: 'cancel',
-            type: 'button',
-            className: 'gu-btn gu-armed',
-            disabled: activeJob.status === 'cancelling',
-            onClick: () => { void cancelUpdate(); },
-          }, h(Glyph, { key: 'icon', paths: ICONS.cancel }),
-          activeJob.status === 'cancelling' ? t('action.cancelling') : t('action.cancelUpdate'))
+        summary.active.length > 0
+          ? h('span', { key: 'busy', className: 'gu-summary' }, t('summary.updatingCount', { count: String(summary.active.length) }))
           : null,
+        summary.total === 0 && phase === 'ready' && views.length > 0
+          ? h('span', { key: 'current', className: 'gu-summary' }, t('summary.allCurrent'))
+          : h('span', { key: 'summary', className: 'gu-summary' }, [
+            summary.behind.length > 0 ? t('summary.behind', { count: String(summary.behind.length) }) : '',
+            summary.behind.length > 0 && summary.pending.length > 0 ? ' · ' : '',
+            summary.pending.length > 0 ? t('summary.pending', { count: String(summary.pending.length) }) : '',
+          ].filter(Boolean).join('')),
       ]);
 
       /** 一行里的任务进度。 */
@@ -919,8 +947,9 @@ window.__ModuleLoader__.load({
         if (view.pendingRestart !== undefined && view.pendingRestart !== null) {
           badges.push(h('span', { key: 'pending', className: 'gu-badge busy', title: restartReasonText(view.pendingRestart.reason, t) }, t('state.pendingRestart')));
         }
-        const disableCheck = busy || checkingRow || missing || phase !== 'ready';
-        const disableUpdate = busy || missing || view.self === true || !behind || typeof installed !== 'string';
+        const actions = rowActions(view, { checking: checkingRow });
+        const disableCheck = !actions.canCheck || phase !== 'ready';
+        const disableUpdate = !actions.canUpdate;
         return h('article', {
           key: view.package,
           className: 'gu-row',
@@ -980,7 +1009,7 @@ window.__ModuleLoader__.load({
                 type: 'button',
                 className: 'gu-btn gu-armed',
                 disabled: job.status === 'cancelling',
-                onClick: () => { void cancelUpdate(); },
+                onClick: () => { void cancelUpdate(job); },
               }, h(Glyph, { key: 'icon', paths: ICONS.cancel }),
               job.status === 'cancelling' ? t('action.cancelling') : t('action.cancelUpdate'))
               : null,
@@ -1094,6 +1123,7 @@ window.__ModuleLoader__.load({
       busyLabel,
       errorText,
       mergeViews,
+      rowActions,
       compareHref,
       liveElapsed,
       PluginUpdatesSection,

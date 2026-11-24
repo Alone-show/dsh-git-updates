@@ -17,7 +17,8 @@
 - **行不消失**：包被卸载后会从 `listBundles()` 消失；宿主在任务开跑前保存该行快照，列表接口把「实时行 + 任务快照」合并返回（`sticky: true`），页面照常显示进度；前端再保留 5 秒兜底，避免轮询闪烁。回滚失败时也保留该行并标「未安装」。
 - **过程可见**：任务视图带固定四步（检查上游/卸载/安装/校验）、每步状态与耗时、整体耗时、带时间戳的日志；页面画成步骤条 + 可展开日志，行内按钮显示当前步骤。安装阶段还会把宿主 `plugin-manager/install-log` / `install-state` 的实时输出写进日志。
 - **结果持久**：成功/失败、`restartReason` 与「待重启」写进状态文件；需要重启时横幅在**刷新页面后依然存在**，宿主重启后由启动对账清掉。
-- **检查反馈**：首次打开自动检查未检查/过期行；「全部检查」按顺序执行，行内显示「检查中…」和进度计数；检查失败显示「无法检查」徽标与原因。
+- **检查不阻塞**：首次打开自动检查未检查/过期行（最多 3 行并行）；「全部检查」也是并行。某行查完即可更新，不需要等整批；检查期间其它行照常操作。
+- **并行更新**：不同插件可同时更新（默认上限 3，`maxConcurrentUpdates`），每行独立的四步进度、日志和「取消更新」；同一个插件仍只允许一个任务。宿主用 profile 写锁把 pnpm 操作串起来，因此并行不会写坏 profile。取消按 `jobId` 只停那一行。
 - **本工具不自我更新**：自身若以 Git 来源出现，那一行只给提示，请到插件页更新。
 
 ## 后台巡检
@@ -34,9 +35,10 @@
 | `GET ?package=<name>` | 读缓存视图（已装/上游 commit、上次检查、上次更新、待重启、`check.stale`；读不到已装 commit 时 `check.state: "unknown"` 且 `error.kind: "no-commit"`） |
 | `GET ?package=<name>&probe=1[&force=1]` | 读视图并向上游探测一次 |
 | `GET ?jobId=<id>` | 读更新任务：`steps`（含每步 `durationMs/status`）、`logs`、`elapsedMs` |
+| `GET` 返回的 `activeJobs` | 所有正在跑的任务摘要（每行按 `job` 取自己的那个） |
 | `POST {action:"check", package, force}` | 强制检查上游 |
 | `POST {action:"update", package, confirm:true, expectedCommit, targetCommit}` | 起更新任务；`targetCommit` 是确认态里的目标，给出时跳过重新探测 |
-| `POST {action:"cancel", confirm:true}` | 取消当前任务 |
+| `POST {action:"cancel", confirm:true, jobId, package?}` | 只取消指定的更新任务 |
 
 `package` 必须是插件管理器里真实存在的受管包；POST 要求 JSON 与 `confirm:true`。错误码：`SELF_UPDATE / STALE_VIEW / ALREADY_LATEST / UNKNOWN_INSTALLED_COMMIT / JOB_RUNNING` → 409，`NOT_FOUND / NOT_MANAGED` → 404，`CHECK_FAILED` → 502。
 
