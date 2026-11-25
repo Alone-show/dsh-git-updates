@@ -58,7 +58,6 @@ export async function apply(ctx, config) {
     manager: ctx.pluginManager,
     profileDir,
     config: resolved,
-    hmr: ctx.get?.('hmr') !== undefined,
     ownPackage: readOwnPackageName(),
     logger: ctx.logger,
   })

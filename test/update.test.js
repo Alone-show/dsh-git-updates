@@ -103,7 +103,7 @@ test('a successful update removes, installs a pinned spec and verifies', async (
     const steps = []
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, requestId: 'req-1',
+      targetCommit: NEW, pinCommits: true, requestId: 'req-1',
       onStep: (step, message) => steps.push(step),
     })
     assert.deepEqual(manager.calls.remove, ['pkg'])
@@ -124,11 +124,12 @@ test('pinCommits false keeps the branch spec', async () => {
     const manager = fakeManager(dir, { installCommit: NEW })
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: false, previous,
-      targetCommit: NEW, pinCommits: false, hmr: false, onStep: () => {},
+      targetCommit: NEW, pinCommits: false, onStep: () => {},
     })
     assert.equal(manager.calls.install[0].spec, 'pkg@github:owner/repo')
     assert.equal(manager.calls.install[0].options.enabled, false)
-    assert.deepEqual(manager.calls.remove, [])
+    // 宿主的 installBundle 拒绝覆盖已装包，所以不管有没有 HMR 都先卸载。
+    assert.deepEqual(manager.calls.remove, ['pkg'])
     assert.equal(result.verified, true)
   } finally {
     await rm(dir, { recursive: true, force: true })
@@ -143,7 +144,7 @@ test('a failed install restores the previous pinned commit', async () => {
     })
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, onStep: () => {},
+      targetCommit: NEW, pinCommits: true, onStep: () => {},
     })
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'INSTALL_FAILED')
@@ -161,7 +162,7 @@ test('a failed verification restores the previous commit', async () => {
     const manager = fakeManager(dir, { installCommit: OLD })
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, onStep: () => {},
+      targetCommit: NEW, pinCommits: true, onStep: () => {},
     })
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'VERIFY_FAILED')
@@ -179,7 +180,7 @@ test('a failure before installing anything does not restore', async () => {
     })
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, onStep: () => {},
+      targetCommit: NEW, pinCommits: true, onStep: () => {},
     })
     assert.equal(result.verified, false)
     assert.equal(result.error.code, 'REMOVE_FAILED')
@@ -197,7 +198,7 @@ test('cancelling after removal reinstalls the previous version', async () => {
     const controller = new AbortController()
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, signal: controller.signal,
+      targetCommit: NEW, pinCommits: true, signal: controller.signal,
       onStep: step => { if (step === 'removing') controller.abort() },
     })
     assert.equal(result.verified, false)
@@ -219,7 +220,7 @@ test('the result carries the restart reason and the steps are logged', async () 
     const logs = []
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true,
+      targetCommit: NEW, pinCommits: true,
       onStep: (step, message) => { steps.push({ step, message }) },
       onLog: (level, message) => { logs.push({ level, message }) },
     })
@@ -243,7 +244,7 @@ test('a failed install logs the diagnostic and the rollback', async () => {
     const logs = []
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true,
+      targetCommit: NEW, pinCommits: true,
       onStep: () => {},
       onLog: (level, message) => { logs.push({ level, message }) },
     })
@@ -263,7 +264,7 @@ test('a private repository installs through SSH under its real package name', as
     const manager = fakeManager(dir)
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, ssh: true, onStep: () => {},
+      targetCommit: NEW, pinCommits: true, ssh: true, onStep: () => {},
     })
     assert.equal(
       manager.calls.install[0].spec,
@@ -283,7 +284,7 @@ test('a failed SSH install rolls back through the same SSH address', async () =>
     const manager = fakeManager(dir, { installResult: { changed: false, application: 'failed', stage: 'install', target: 'x', error: { code: 'INSTALL_FAILED', diagnostic: 'boom' } } })
     const result = await runUpdate({
       manager, profileDir: dir, name: 'pkg', source, enabled: true, previous,
-      targetCommit: NEW, pinCommits: true, hmr: true, ssh: true, onStep: () => {},
+      targetCommit: NEW, pinCommits: true, ssh: true, onStep: () => {},
     })
     assert.equal(manager.calls.install.length, 2)
     assert.equal(manager.calls.install[1].spec, `pkg@git+ssh://git@github.com/owner/repo.git#${OLD}`)
