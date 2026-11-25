@@ -108,6 +108,32 @@ test('cancelling flips the job to failed once the run settles', async () => {
   assert.equal(runner.cancel(job.id), undefined)
 })
 
+test('clearLogs drops finished logs and keeps a running job log', async () => {
+  const runner = new JobRunner()
+  let release
+  const gate = new Promise(resolve => { release = resolve })
+  const running = runner.start('running', async ({ log }) => {
+    log('info', 'keep me')
+    await gate
+    return { verified: true }
+  })
+  const finished = runner.start('finished', async () => ({ verified: true }))
+  const done = await settled(runner, finished.id)
+  assert.equal(done.logs.length > 0, true)
+  assert.equal(running.logs.length > 0, true)
+
+  assert.equal(runner.clearLogs(), 1)
+  assert.equal(done.logs.length, 0)
+  assert.equal(running.logs.length > 0, true)
+  // 清空后任务的步骤与结果仍在，只丢日志。
+  assert.equal(done.status, 'done')
+  assert.equal(done.steps.length, 4)
+  assert.equal(runner.clearLogs(), 0)
+
+  release()
+  await settled(runner, running.id)
+})
+
 test('the same package is refused while its job runs, other packages are allowed', async () => {
   const runner = new JobRunner()
   let release

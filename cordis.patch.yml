@@ -7,12 +7,14 @@
 #   POST {action:check}    强制向上游探测一次
 #   POST {action:update}   卸载 → 安装（确认过的）目标 commit → 校验（失败回滚）
 #   POST {action:cancel}   取消正在跑的更新
+#   POST {action:clearLogs} 丢弃已完成任务的更新日志（运行中任务保留）
 # 宿主订阅 plugin-manager/install-log 与 install-state，把安装输出写进任务日志。
 # 后台巡检默认关闭；profile 里配 backgroundCheckMs 才启用。
 #
 # 浏览器半侧（client.js）只挂设置页：
 #   settings.section       「插件更新」整页：列表 + 检查 + 更新 + 进度 + 取消
 #   settings.section.icon  左侧导航图标
+# 关闭设置/切走这一页后清掉已完成任务的日志；插件名可点击，跳转到插件详情页。
 # 不在插件详情页、插件页标签或全局浮层添加任何控件。
 #
 # 更新时包会先被卸载、从 listBundles() 消失：宿主用任务开跑前的快照把行补回来

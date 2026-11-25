@@ -16,6 +16,8 @@
 - **更新怎么做**：确认态里看到的目标 commit 会随 POST 回传（`targetCommit`），宿主直接装这个 commit、不再重新探测，所以确认后立刻进入步骤条；随后卸载 → 安装目标 commit → 校验（锁文件 commit、包名、`dsh.bundle.patch`）→ 失败或取消时把原 spec 装回去。默认钉到具体 commit（`#<sha>`），回滚可精确复原；可用 `pinCommits: false` 改为分支跟随。
 - **行不消失**：包被卸载后会从 `listBundles()` 消失；宿主在任务开跑前保存该行快照，列表接口把「实时行 + 任务快照」合并返回（`sticky: true`），页面照常显示进度；前端再保留 5 秒兜底，避免轮询闪烁。回滚失败时也保留该行并标「未安装」。
 - **过程可见**：任务视图带固定四步（检查上游/卸载/安装/校验）、每步状态与耗时、整体耗时、带时间戳的日志；页面画成步骤条 + 可展开日志，行内按钮显示当前步骤。安装阶段还会把宿主 `plugin-manager/install-log` / `install-state` 的实时输出写进日志。
+- **日志不跨设置页保留**：关闭设置或切走这一页后，宿主丢弃已完成任务的更新日志；重新打开时先清日志再读列表，所以不会再看到旧日志。运行中的任务保留日志，重开设置仍能看到实时输出；关闭期间结束的任务会在下次打开时清掉。
+- **名称跳转详情**：插件名是可点击的按钮；点击后关闭设置并打开 DSH 左侧「插件」面板里该插件的详情页。宿主没有插件页导航时名称不跳转、设置也不会关闭。
 - **结果持久**：成功/失败、`restartReason` 与「待重启」写进状态文件；需要重启时横幅在**刷新页面后依然存在**，宿主重启后由启动对账清掉。
 - **检查不阻塞**：首次打开自动检查未检查/过期行（最多 3 行并行）；「全部检查」也是并行。某行查完即可更新，不需要等整批；检查期间其它行照常操作。
 - **并行更新**：不同插件可同时更新（默认上限 3，`maxConcurrentUpdates`），每行独立的四步进度、日志和「取消更新」；同一个插件仍只允许一个任务。宿主用 profile 写锁把 pnpm 操作串起来，因此并行不会写坏 profile。取消按 `jobId` 只停那一行。
@@ -39,8 +41,9 @@
 | `POST {action:"check", package, force}` | 强制检查上游 |
 | `POST {action:"update", package, confirm:true, expectedCommit, targetCommit}` | 起更新任务；`targetCommit` 是确认态里的目标，给出时跳过重新探测 |
 | `POST {action:"cancel", confirm:true, jobId, package?}` | 只取消指定的更新任务 |
+| `POST {action:"clearLogs"}` | 丢弃已完成任务的日志（运行中任务保留）；不需要 package/confirm，返回 `{cleared}` |
 
-`package` 必须是插件管理器里真实存在的受管包；POST 要求 JSON 与 `confirm:true`。错误码：`SELF_UPDATE / STALE_VIEW / ALREADY_LATEST / UNKNOWN_INSTALLED_COMMIT / JOB_RUNNING` → 409，`NOT_FOUND / NOT_MANAGED` → 404，`CHECK_FAILED` → 502。
+`package` 必须是插件管理器里真实存在的受管包；除 `clearLogs` 外的 POST 要求 JSON 与 `confirm:true`。错误码：`SELF_UPDATE / STALE_VIEW / ALREADY_LATEST / UNKNOWN_INSTALLED_COMMIT / JOB_RUNNING` → 409，`NOT_FOUND / NOT_MANAGED` → 404，`CHECK_FAILED` → 502。
 
 ## 状态
 

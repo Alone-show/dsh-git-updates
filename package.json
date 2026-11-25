@@ -1,6 +1,6 @@
 {
   "name": "dsh-git-updates",
-  "version": "0.4.0",
+  "version": "0.4.2",
   "private": true,
   "type": "module",
   "description": "DSH 插件：在设置页「插件更新」里检查并更新从 GitHub / Git 安装的插件——显示已装 commit 与上游最新 commit，更新过程可见进度，卸载期间保留该行，失败自动回滚。",

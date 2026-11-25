@@ -28,6 +28,7 @@ function fakeService(overrides = {}) {
       }
       : undefined),
     cancel: target => { calls.push(['cancel', target]); return { cancelled: true } },
+    clearLogs: () => { calls.push(['clearLogs']); return { cleared: 2 } },
     activeJobs: () => [],
     ...overrides,
   }
@@ -113,6 +114,17 @@ test('POST cancel, invalid action and missing fields', async () => {
 
   const missing = await route.fetch(post({ action: 'check' }))
   assert.equal(missing.status, 400)
+})
+
+test('POST clearLogs needs no package and reports the count', async () => {
+  const service = fakeService()
+  const route = createRoute(service, config)
+  const response = await route.fetch(post({ action: 'clearLogs' }))
+  assert.equal(response.status, 200)
+  const body = await response.json()
+  assert.equal(body.ok, true)
+  assert.equal(body.cleared, 2)
+  assert.deepEqual(service.calls.at(-1), ['clearLogs'])
 })
 
 test('POST rejects a non-JSON content type, oversized and malformed bodies', async () => {

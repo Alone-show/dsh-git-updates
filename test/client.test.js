@@ -6,9 +6,10 @@ import vm from 'node:vm'
 /**
  * 在最小 VM 里求值 client.js：只桩掉 __ModuleLoader__ 与 react，
  * 拿到工厂导出的纯函数（渲染部分不在这里跑）。
+ * @param {(url: string, init: any) => Promise<any>} [fetchImpl] fetch 桩。
  * @returns {any} client.js 的 exports。
  */
-function loadClient() {
+function loadClient(fetchImpl = async () => { throw new Error('fetch not stubbed') }) {
   const source = readFileSync(new URL('../client.js', import.meta.url), 'utf8')
   let factory
   const context = {
@@ -32,7 +33,7 @@ function loadClient() {
     clearTimeout,
     setInterval,
     clearInterval,
-    fetch: async () => { throw new Error('fetch not stubbed') },
+    fetch: fetchImpl,
   }
   context.globalThis = context
   vm.createContext(context)
@@ -213,14 +214,129 @@ test('apply registers exactly the settings page and its icon', () => {
   assert.equal(registrations[0].options.locale, 'git-updates')
 })
 
+/**
+ * 深度遍历 React 元素树，收集指定 type 的节点。
+ * @param {any} tree 元素、元素数组或文本。
+ * @param {string} type 要收集的元素类型（如 'button'）。
+ * @param {any[]} [out] 累积结果。
+ * @returns {any[]} 匹配的节点。
+ */
+function nodesOf(tree, type, out = []) {
+  if (Array.isArray(tree)) {
+    for (const child of tree) nodesOf(child, type, out)
+    return out
+  }
+  if (tree === null || typeof tree !== 'object') return out
+  if (tree.type === type) out.push(tree)
+  nodesOf(tree.children, type, out)
+  return out
+}
+
 test('the settings section renders its loading state without a browser', () => {
   const tree = client.__test.PluginUpdatesSection({ t: key => key, resolveText: value => String(value) })
   assert.equal(tree.type, 'div')
   const kinds = Array.from(tree.children[0], child => child.type)
   assert.deepEqual(kinds, ['style', 'header', 'div', 'p'])
+  // 按钮按原生 Button 的变体分层：检查类是描边，加载中禁用。
+  const buttons = nodesOf(tree, 'button')
+  assert.deepEqual(Array.from(buttons, button => button.props.className), ['gu-btn gu-outline'])
+  assert.equal(buttons[0].props.disabled, true)
   const icon = client.__test.PluginUpdatesIcon({ size: 16 })
   assert.equal(icon.type, 'svg')
   assert.equal(icon.props.width, 16)
+})
+
+test('clicking a plugin name opens its detail page and then closes settings', () => {
+  const calls = []
+  const props = {
+    openBundle: name => { calls.push(name); return true },
+    close: () => calls.push('close'),
+  }
+  assert.equal(client.__test.openBundleDetail(props, 'pkg'), true)
+  assert.deepEqual(calls, ['pkg', 'close'])
+
+  // 宿主没有插件页导航时，不能把设置白关掉。
+  const failed = []
+  assert.equal(client.__test.openBundleDetail({
+    openBundle: () => false,
+    close: () => failed.push('close'),
+  }, 'pkg'), false)
+  assert.deepEqual(failed, [])
+  assert.equal(client.__test.openBundleDetail({}, 'pkg'), false)
+  assert.equal(client.__test.openBundleDetail(props, ''), false)
+  assert.equal(client.__test.openBundleDetail({
+    openBundle: () => { throw new Error('boom') },
+    close: () => failed.push('close'),
+  }, 'pkg'), false)
+  assert.deepEqual(failed, [])
+})
+
+test('the settings section injects a guarded plugin-detail opener', () => {
+  const opened = []
+  const registrations = []
+  const ctx = {
+    effect: callback => callback(),
+    get: name => (name === 'pluginNavigation' ? { openBundle: packageName => { opened.push(packageName) } } : undefined),
+    locale: {
+      register: () => () => {},
+      bind: () => key => key,
+      resolveText: value => (typeof value === 'string' ? value : ''),
+    },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (options, component) => {
+        registrations.push({ options, component })
+        return () => {}
+      },
+    },
+  }
+  client.apply(ctx)
+  const face = registrations[0].options.inject()
+  assert.equal(face.openBundle('pkg'), true)
+  assert.deepEqual(opened, ['pkg'])
+  assert.equal(typeof face.resolveText, 'function')
+})
+
+test('a missing plugin navigation makes the opener return false', () => {
+  const registrations = []
+  const ctx = {
+    effect: callback => callback(),
+    get: () => undefined,
+    locale: {
+      register: () => () => {},
+      bind: () => key => key,
+      resolveText: value => (typeof value === 'string' ? value : ''),
+    },
+    slots: {
+      inject: (_name, callback) => callback(),
+      register: (options, component) => {
+        registrations.push({ options, component })
+        return () => {}
+      },
+    },
+  }
+  client.apply(ctx)
+  assert.equal(registrations[0].options.inject().openBundle('pkg'), false)
+})
+
+test('logs are cleared after settings closes, and a quick reopen keeps them', async () => {
+  const calls = []
+  const scheduled = loadClient(async (url, init) => {
+    calls.push({ url, init })
+    return { ok: true, status: 200, json: async () => ({ ok: true, cleared: 0 }) }
+  })
+  scheduled.__test.scheduleLogClear()
+  await new Promise(resolve => setTimeout(resolve, 350))
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].url, '/api/dsh-git-updates')
+  assert.equal(calls[0].init.method, 'POST')
+  assert.deepEqual(JSON.parse(calls[0].init.body), { action: 'clearLogs' })
+
+  // 关掉又很快重开：挂载时会取消还没发出去的清理。
+  scheduled.__test.scheduleLogClear()
+  scheduled.__test.cancelScheduledLogClear()
+  await new Promise(resolve => setTimeout(resolve, 350))
+  assert.equal(calls.length, 1)
 })
 
 test('rowActions gates only the row itself, never the whole page', () => {

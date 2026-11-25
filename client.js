@@ -8,6 +8,8 @@
  *   · 检查更新 / 全部检查：逐行探测上游（宿主侧走 git ls-remote）；
  *   · 更新到 <sha>：二次确认后交给宿主「卸载 → 安装 → 校验」；
  *   · 进度：四步状态条 + 每步耗时 + 实时日志 + 结果横幅，可取消；
+ *   · 插件名可点击：关闭设置并跳到该插件的详情页；
+ *   · 关闭/切走设置后丢弃已完成任务的日志（运行中任务保留）；
  *   · 卸载期间那一行不会消失：宿主用任务快照补行，前端再留 5s 兜底。
  *
  * 不在插件详情页、插件页标签或全局浮层添加任何控件。
@@ -40,6 +42,8 @@ window.__ModuleLoader__.load({
     const CONFIRM_MS = 8000;
     /** 前端兜底：列表里暂时缺失的行再保留多久。 */
     const CLIENT_STICKY_MS = 5000;
+    /** 离开设置页后，延迟多久清日志；避开同一次关闭里的重挂载抖动。 */
+    const LOGS_CLEAR_DELAY_MS = 200;
     /** 步骤顺序；与宿主 lib/jobs.js 的 STEP_SEQUENCE 一致。 */
     const STEP_SEQUENCE = ['checking', 'removing', 'installing', 'verifying'];
 
@@ -69,6 +73,7 @@ window.__ModuleLoader__.load({
       'action.busy': '更新中…',
       'action.busyStep': '{step}…',
       'action.reload': '刷新页面',
+      'action.openDetail': '查看插件详情',
       'action.openLogs': '日志（{count} 条）',
       'action.closeLogs': '收起日志',
       'state.checking': '检查中',
@@ -155,6 +160,7 @@ window.__ModuleLoader__.load({
       'action.busy': 'Updating…',
       'action.busyStep': '{step}…',
       'action.reload': 'Reload page',
+      'action.openDetail': 'Open plugin details',
       'action.openLogs': 'Logs ({count})',
       'action.closeLogs': 'Hide logs',
       'state.checking': 'Checking',
@@ -446,6 +452,26 @@ window.__ModuleLoader__.load({
     }
 
     /**
+     * 点击插件名：打开插件详情页，成功后才关闭设置弹层。
+     * @param {{ openBundle?: (name: string) => boolean, close?: () => void }} props 注入面 + owner props。
+     * @param {unknown} packageName 包名。
+     * @returns {boolean} 是否真的发起了跳转。
+     */
+    function openBundleDetail(props, packageName) {
+      if (typeof packageName !== 'string' || packageName === '') return false;
+      if (typeof props?.openBundle !== 'function') return false;
+      let opened = false;
+      try {
+        opened = props.openBundle(packageName) === true;
+      } catch {
+        opened = false;
+      }
+      if (!opened) return false;
+      if (typeof props.close === 'function') props.close();
+      return true;
+    }
+
+    /**
      * GitHub 比较链接；其它宿主不生成。
      * @param {any} view 行。
      * @returns {string | undefined} 链接。
@@ -482,18 +508,31 @@ window.__ModuleLoader__.load({
       .gu-intro { margin: 0; font-size: 12.5px; line-height: 1.65; color: var(--dsw-alias-label-tertiary); }
       .gu-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
       .gu-summary { font-size: 12px; color: var(--dsw-alias-label-tertiary); }
+      /* 按钮复制 DSH 原生 Button（Button.module.css）的 .button + .sm 规格与变体。 */
       .gu-btn {
-        display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 10px;
-        font-size: 12px; line-height: 18px; border-radius: var(--dsw-radius-sm, 8px); cursor: pointer;
+        box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center;
+        gap: 4px; border: none; border-radius: var(--dsw-radius-sm, 8px); cursor: pointer;
+        height: 28px; padding: 0 10px; font-size: 12px; line-height: 18px;
         background: transparent; color: var(--dsw-alias-label-primary);
+      }
+      .gu-btn:disabled { cursor: not-allowed; opacity: .4; }
+      @media (hover: hover) {
+        .gu-btn.gu-ghost:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+        .gu-btn.gu-outline:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+        .gu-btn.gu-primary:hover:not(:disabled) { background: var(--dsw-alias-button-primary-hover); }
+      }
+      .gu-btn.gu-ghost:active:not(:disabled) { background: var(--dsw-alias-interactive-bg-active); }
+      .gu-btn.gu-outline {
+        border: .5px solid transparent;
         box-shadow: inset 0 0 0 var(--dsh-hairline-width, .5px) var(--dsh-button-outline-color, var(--dsw-alias-border-l3));
       }
-      @media (hover: hover) { .gu-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); } }
-      .gu-btn:disabled { cursor: not-allowed; opacity: .4; }
-      .gu-btn.gu-primary { color: var(--dsw-alias-label-primary); --dsh-button-outline-color: color-mix(in srgb, var(--dsw-alias-label-primary) 26%, transparent); }
+      .gu-btn.gu-primary {
+        background: var(--dsw-alias-button-primary-fill);
+        color: var(--dsw-alias-label-primary-foreground);
+      }
       .gu-btn.gu-armed {
-        color: var(--dsw-alias-state-warn-primary);
-        --dsh-button-outline-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 30%, transparent);
+        color: var(--dsw-alias-state-warn-label, var(--dsw-alias-state-warn-primary));
+        --dsh-button-outline-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 40%, transparent);
       }
       .gu-icon { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
       .gu-icon svg { width: 13px; height: 13px; }
@@ -503,9 +542,17 @@ window.__ModuleLoader__.load({
         border-radius: 10px;
         box-shadow: inset 0 0 0 var(--dsh-hairline-width, .5px) var(--dsw-alias-border-l3);
       }
-      .gu-row[data-busy="true"] { --dsh-button-outline-color: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 26%, transparent); }
       .gu-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; }
       .gu-name { font-size: 13.5px; font-weight: 600; }
+      .gu-name-link {
+        margin: 0; padding: 0; border: none; background: none;
+        font-family: inherit; color: inherit; text-align: left; cursor: pointer;
+      }
+      @media (hover: hover) { .gu-name-link:hover { text-decoration: underline; text-underline-offset: 2px; } }
+      .gu-name-link:focus-visible {
+        outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+        outline-offset: 2px; border-radius: 4px;
+      }
       .gu-pkg { font-family: var(--dsw-font-mono, ui-monospace, monospace); font-size: 11px; color: var(--dsw-alias-label-tertiary); }
       .gu-badges { display: inline-flex; flex-wrap: wrap; gap: 4px; }
       .gu-badge { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 999px; background: var(--dsw-alias-interactive-bg-hover); color: var(--dsw-alias-label-secondary); }
@@ -571,6 +618,25 @@ window.__ModuleLoader__.load({
       return data;
     }
 
+    /** 离开设置页后延迟清日志的定时器；同一模块内新挂载会取消它。 */
+    let clearLogsTimer = null;
+
+    /** 取消待执行的日志清理。 */
+    function cancelScheduledLogClear() {
+      if (clearLogsTimer === null) return;
+      clearTimeout(clearLogsTimer);
+      clearLogsTimer = null;
+    }
+
+    /** 安排一次延迟清日志：只丢已完成任务的日志，失败静默。 */
+    function scheduleLogClear() {
+      cancelScheduledLogClear();
+      clearLogsTimer = setTimeout(() => {
+        clearLogsTimer = null;
+        void request('POST', { action: 'clearLogs' }).catch(() => {});
+      }, LOGS_CLEAR_DELAY_MS);
+    }
+
     /** 一个内联图标。 */
     function Glyph(props) {
       const paths = props.paths;
@@ -594,7 +660,7 @@ window.__ModuleLoader__.load({
 
     /**
      * 设置页的「插件更新」正文。
-     * @param {any} props 插槽 props（t + 注入的 resolveText）。
+     * @param {any} props 插槽 props（t、注入的 resolveText/openBundle、owner 的 close）。
      * @returns {any} React 节点。
      */
     function PluginUpdatesSection(props) {
@@ -703,10 +769,20 @@ window.__ModuleLoader__.load({
 
       useEffect(() => {
         mounted.current = true;
-        void bootstrap();
+        // 上一次关闭设置的清理还没发出去就重新打开了：保留日志。
+        cancelScheduledLogClear();
+        const boot = async () => {
+          // 先丢已完成任务的旧日志，再读列表，页面就不会闪一下旧日志。
+          await request('POST', { action: 'clearLogs' }).catch(() => {});
+          if (mounted.current !== true) return;
+          await bootstrap();
+        };
+        void boot();
         return () => {
           mounted.current = false;
           if (armedTimer.current !== null) clearTimeout(armedTimer.current);
+          // 关闭设置/切走这一页：已完成任务的日志不再保留。
+          scheduleLogClear();
         };
         // 只在挂载时跑一次。
         // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -816,7 +892,7 @@ window.__ModuleLoader__.load({
         h('button', {
           key: 'checkAll',
           type: 'button',
-          className: 'gu-btn',
+          className: 'gu-btn gu-outline',
           disabled: phase !== 'ready' || views.length === 0,
           onClick: () => {
             const names = views
@@ -870,7 +946,7 @@ window.__ModuleLoader__.load({
               h('button', {
                 key: 'reload',
                 type: 'button',
-                className: 'gu-btn',
+                className: 'gu-btn gu-primary',
                 style: { marginTop: '6px' },
                 onClick: () => { globalThis.location?.reload?.(); },
               }, t('action.reload')),
@@ -912,7 +988,7 @@ window.__ModuleLoader__.load({
             h('button', {
               key: 'toggle',
               type: 'button',
-              className: 'gu-btn',
+              className: 'gu-btn gu-ghost',
               onClick: () => setOpenLogs(previous => ({ ...previous, [view.package]: previous[view.package] !== true })),
             }, logsOpen ? t('action.closeLogs') : t('action.openLogs', { count: String(logs.length) })),
             h('ul', { key: 'list', className: 'gu-logs', style: { marginTop: '6px' } }, shown.map((entry, index) => h('li', {
@@ -957,7 +1033,15 @@ window.__ModuleLoader__.load({
           'aria-busy': running ? 'true' : undefined,
         }, [
           h('div', { key: 'head', className: 'gu-row-head' }, [
-            h('span', { key: 'name', className: 'gu-name' }, textOf(resolveText, view.title, view.package)),
+            typeof props.openBundle === 'function'
+              ? h('button', {
+                key: 'name',
+                type: 'button',
+                className: 'gu-name gu-name-link',
+                title: t('action.openDetail'),
+                onClick: () => { openBundleDetail(props, view.package); },
+              }, textOf(resolveText, view.title, view.package))
+              : h('span', { key: 'name', className: 'gu-name' }, textOf(resolveText, view.title, view.package)),
             h('span', { key: 'pkg', className: 'gu-pkg' }, view.package),
             typeof view.installed?.version === 'string'
               ? h('span', { key: 'version', className: 'gu-badge' }, t('meta.version', { version: view.installed.version }))
@@ -986,7 +1070,7 @@ window.__ModuleLoader__.load({
             h('button', {
               key: 'check',
               type: 'button',
-              className: 'gu-btn',
+              className: 'gu-btn gu-outline',
               disabled: disableCheck,
               onClick: () => { void checkRows([view.package], true); },
             }, h(Glyph, { key: 'icon', paths: ICONS.refresh }), checkingRow ? t('action.checking') : t('action.check')),
@@ -994,7 +1078,7 @@ window.__ModuleLoader__.load({
               ? h('button', {
                 key: 'update',
                 type: 'button',
-                className: isArmed ? 'gu-btn gu-armed' : 'gu-btn gu-primary',
+                className: isArmed ? 'gu-btn gu-outline gu-armed' : 'gu-btn gu-primary',
                 disabled: disableUpdate,
                 title: isArmed ? t('action.confirmHint') : t('action.updateTo', { commit: short(latest) }),
                 onClick: () => armOrUpdate(view),
@@ -1007,7 +1091,7 @@ window.__ModuleLoader__.load({
               ? h('button', {
                 key: 'cancel',
                 type: 'button',
-                className: 'gu-btn gu-armed',
+                className: 'gu-btn gu-outline',
                 disabled: job.status === 'cancelling',
                 onClick: () => { void cancelUpdate(job); },
               }, h(Glyph, { key: 'icon', paths: ICONS.cancel }),
@@ -1031,7 +1115,7 @@ window.__ModuleLoader__.load({
             h('button', {
               key: 'retry',
               type: 'button',
-              className: 'gu-btn',
+              className: 'gu-btn gu-outline',
               style: { marginTop: '6px' },
               onClick: () => { setPhase('loading'); void refresh(); },
             }, t('page.retry')),
@@ -1084,6 +1168,13 @@ window.__ModuleLoader__.load({
         resolveText: text => (typeof ctx.locale.resolveText === 'function'
           ? ctx.locale.resolveText(text)
           : (typeof text === 'string' ? text : '')),
+        // 插件页由 ui-plugin-manager 提供；缺失时名称退回普通文本（不关闭设置）。
+        openBundle: packageName => {
+          const navigation = typeof ctx.get === 'function' ? ctx.get('pluginNavigation') : undefined;
+          if (navigation === undefined || navigation === null || typeof navigation.openBundle !== 'function') return false;
+          navigation.openBundle(packageName);
+          return true;
+        },
       });
       ctx.effect(
         () => ctx.slots.inject('settings.section', () => ctx.slots.register({
@@ -1126,6 +1217,9 @@ window.__ModuleLoader__.load({
       rowActions,
       compareHref,
       liveElapsed,
+      openBundleDetail,
+      scheduleLogClear,
+      cancelScheduledLogClear,
       PluginUpdatesSection,
       PluginUpdatesIcon,
       dicts: { zh, en },

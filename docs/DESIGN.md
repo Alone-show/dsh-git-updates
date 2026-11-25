@@ -1,8 +1,12 @@
-# dsh-git-updates 方案文档（0.3.0）
+# dsh-git-updates 方案文档（0.4.2）
 
 > 目标：给「从 GitHub / Git 拉取安装的插件」补上检查更新与一键更新的能力，入口放在**设置**里。
 > 运行环境：DSH Desktop（`next` 通道，profile=`desktop`，DSH `0.2.2-rc.5`），Linux，Node 22，pnpm 11.28.5。
-> 文档日期：2026-11-24 · 插件版本：0.4.0（`link:/home/my/Downloads/dsh-git-updates`）
+> 文档日期：2026-11-25 · 插件版本：0.4.2（`link:/home/my/Downloads/dsh-git-updates`）
+>
+> **0.4.2**：关闭设置（或切走这一页）后丢弃已完成任务的更新日志（宿主 `POST {action:"clearLogs"}`，运行中任务保留）；插件名改成按钮，点击后关闭设置并跳到 DSH「插件」面板的该插件详情页。
+>
+> **0.4.1**：按钮改为复制 DSH 原生 `Button` 的 `.button`/`.sm` 规格与 `primary`/`outline`/`ghost` 变体——主操作实心、次要操作描边、文字操作无边框；确认态保留 warning 描边与文字。
 >
 > **0.3.0 相对 0.2.0 的变更**：界面从「插件详情页 + 插件页标签 + 全局浮层」收敛为**设置里的独立一栏**（`settings.section`），其余页面的控件全部移除；新增「更新时那一行不能消失」的粘性行机制（`lib/sticky.js`）；任务视图补齐四步状态、每步耗时与实时日志；后台巡检默认关闭。
 
@@ -75,7 +79,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 │ client.js（手写 __ModuleLoader__ 包，不经构建）                    │
 │   settings.section       ← 「插件更新」整页（列表 + 进度 + 取消）    │
 │   settings.section.icon  ← 左侧导航图标                            │
-│   纯函数：mergeViews / stepRows / phaseOf / format…（Node 单测）    │
+│   纯函数：mergeViews / stepRows / openBundleDetail / format…（Node 单测） │
 └───────────────┬──────────────────────────────────────────────────┘
                 │ 同源 fetch，JSON，带 confirm
 ┌───────────────▼──────────────── 宿主（Electron 主进程）───────────┐
@@ -239,6 +243,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `POST {action:'check', package, force?}` | 强制检查 |
 | `POST {action:'update', package, confirm:true, expectedCommit?, targetCommit?}` | 起更新任务 |
 | `POST {action:'cancel', confirm:true, jobId, package?}` | 只取消指定任务 |
+| `POST {action:'clearLogs'}` | 丢弃已完成任务的更新日志（运行中任务保留），不需要 package/confirm |
 
 错误码 → HTTP：`NOT_FOUND/NOT_MANAGED` 404、`STALE_VIEW/ALREADY_LATEST/UNKNOWN_INSTALLED_COMMIT/JOB_RUNNING/SELF_UPDATE` 409、`CHECK_FAILED` 502、`INVALID_BODY/INVALID_ACTION` 400、`BODY_TOO_LARGE` 413、`INTERNAL` 500。POST 只接受 `content-type: application/json`。
 
@@ -273,8 +278,9 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 ### 8.2 视觉规格
 
 - 页面：标题 16px/600、说明 12.5px 三级文字、行卡片 10px 圆角 + 半像素描边。
-- 按钮：复刻插件页 `Button` 的 `outline`/`sm` 规格——高 28px、内边距 `0 10px`、字号 12px/18px、圆角 `var(--dsw-radius-sm)`、`box-shadow: inset 0 0 0 var(--dsh-hairline-width) var(--dsh-button-outline-color)`、hover 用 `--dsw-alias-interactive-bg-hover`、禁用 `opacity:.4`。
-- 确认态不刷成实心，只把描边/文字换成 `--dsw-alias-state-warn-primary`（与 0.2.0 一致）。
+- 按钮：复制原生 `Button.module.css` 的 `.button` + `.sm` 规格——高 28px、内边距 `0 10px`、字号 12px/18px、圆角 `var(--dsw-radius-sm)`、`gap:4px`、禁用 `opacity:.4`。按 `.gu-` 变体分层：`gu-primary` 实心（`--dsw-alias-button-primary-fill` + `--dsw-alias-label-primary-foreground`），`gu-outline` 使用透明边框 + 半像素内描边，`gu-ghost` 仅 hover/active 背景；hover/active 分别取 `--dsw-alias-button-primary-hover`、`--dsw-alias-interactive-bg-hover`、`--dsw-alias-interactive-bg-active`。
+- 主操作（更新到 `<sha>`、刷新页面）用 `gu-primary`；检查、取消、重试用 `gu-outline`；日志折叠用 `gu-ghost`。确认态在 `gu-outline` 上加 `gu-armed`，只把描边/文字换成 `--dsw-alias-state-warn-primary` / `--dsw-alias-state-warn-label`（与 0.2.0 的二次确认语义一致）。
+- 按 DSH 插件规范不 import `@deepseek-ai/dsh-client-ui-primitives`，而是复制原生控件的标记与 CSS；按钮焦点环交给宿主全局 `button:focus-visible`，名称链接显式使用 `--dsw-focus-ring-*` 变量。
 - 图标全部内联 SVG（13px），不依赖 symbol id；颜色继承 `currentColor`。
 - 样式随组件挂载/卸载（组件内渲染 `<style>`），全部类名 `gu-` 前缀，不影响其它设置页。
 
@@ -295,6 +301,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | 无法检查 | 琥珀提示 + 失败原因；认证失败额外说明需要本机 git 凭据（工具不会自己索要密码） |
 | 自身 | 「本工具」徽标 + 更新按钮禁用 + 提示到插件页更新 |
 | 粘性行 | 显示快照里的 commit 与任务进度，不因包被卸载而消失 |
+| 关闭设置后重开 | 已完成任务的日志已清空，进度/结论仍在；运行中任务的日志保留 |
 
 ### 8.4 交互流程
 
@@ -302,17 +309,20 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 2. **二次确认**：点「更新」→ 按钮变「确认更新」→ 8 秒内再点才执行（`CONFIRM_MS=8000`）。
 3. **进度**：任务起后忙时 900ms、空闲 15s 轮询 `GET`；每行的 `job.steps/logs` 驱动自己的四步条与日志。多个插件可同时更新，每行有自己的「取消更新」，按 `jobId` 只停那一行。
 4. **结果**：成功刷新视图并提示生效/重启；失败展示原因与回滚结论。
-5. **刷新要求**：宿主数据改完立即读得到（lockfile），但**新代码要重启 DSH**；浏览器侧改 `client.js` 后需刷新页面。
+5. **名称跳转**：点击行内插件名 → 关闭设置（owner props 的 `close()`）→ `ctx.get('pluginNavigation').openBundle(package)` 打开插件面板详情；导航不可用时名称不跳转、设置也不关闭。
+6. **日志生命周期**：离开这一页（关闭设置或切走）后 200ms 发 `clearLogs`；每次挂载先 `clearLogs` 再读列表，所以重开设置看不到已完成任务的旧日志。运行中任务不清，重开后仍显示实时日志；关闭期间结束的任务会在下次打开时清掉。
+7. **刷新要求**：宿主数据改完立即读得到（lockfile），但**新代码要重启 DSH**；浏览器侧改 `client.js` 后需刷新页面。
 
 ### 8.5 文案
 
-字典在 `client.js` 内（`zh` / `en`，命名空间 `git-updates`），缺词条回退 key，不会白屏。关键项：`nav.label`（插件更新）、`action.check`、`action.updateTo`、`action.confirm`、`action.cancelUpdate`、`step.*`、`result.*`、`err.*`、`reason.*`。
+字典在 `client.js` 内（`zh` / `en`，命名空间 `git-updates`），缺词条回退 key，不会白屏。关键项：`nav.label`（插件更新）、`action.check`、`action.updateTo`、`action.confirm`、`action.cancelUpdate`、`action.openDetail`、`step.*`、`result.*`、`err.*`、`reason.*`。
 
 ### 8.6 可访问性与降级
 
 - 按钮有 `title` / `aria-label` 语义（确认态 title 提示再点一次）；状态同时用文字表达，不只靠颜色。
+- 插件名是真正的 `button`：可键盘 Enter/Space 触发，`title` 为「查看插件详情」，焦点环复用宿主变量。
 - 步骤条是 `ul/li`，图标 `aria-hidden`。
-- 组件卸载清定时器；轮询只在挂载期间进行。
+- 组件卸载清定时器并安排一次日志清理；轮询只在挂载期间进行。
 - 宿主路由不可用（headless / 旧版本）→ 页内「无法读取更新服务」，不抛错、不影响设置其它页。
 
 ## 9. 安全与权限
@@ -320,7 +330,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | 面 | 处理 |
 | --- | --- |
 | 路由鉴权 | 走 `ctx.connection.fetch`（与 Web GUI 同一套 cookie/token 鉴权），不自己开裸 HTTP 端口 |
-| 写操作 | 必须 `POST` + `application/json` + `confirm:true`；`package` 只能是 `listBundles()` 里真实存在的受管 Git 依赖 |
+| 写操作 | 除 `clearLogs` 外必须 `POST` + `application/json` + `confirm:true`；`package` 只能是 `listBundles()` 里真实存在的受管 Git 依赖。`clearLogs` 只丢已完成任务的日志，不需要 package/confirm。 |
 | 自身保护 | `ownPackage` 命中时 `SELF_UPDATE`（409），列表标 `self`，按钮禁用 |
 | 凭据 | 探测只用本机 git 配置；不读、不写、不转发任何 token；状态文件不含带凭据 URL |
 | 命令注入 | 只调用 `git`，参数数组传参（不拼 shell），ref/URL 来自 profile 声明 |
@@ -329,7 +339,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 ## 10. 测试与验证
 
-### 10.1 单测（`node --test "test/*.test.js"`，106 个全过）
+### 10.1 单测（`node --test "test/*.test.js"`，117 个全过）
 
 | 文件 | 覆盖 |
 | --- | --- |
@@ -338,12 +348,12 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `test/probe.test.js` | ref 匹配、失败分类、环境加固、本地 bare 仓库的真实 `git ls-remote`、真实超时 |
 | `test/state.test.js` | 缺失/损坏/版本不符、0600、原子写、启动对账 |
 | `test/update.test.js` | 成功路径、`pinCommits:false`、安装失败/校验失败回滚、卸载失败不回滚、取消后重装旧版本 |
-| `test/jobs.test.js` | 四步状态、每步耗时、50 条日志上限、取消、单任务、留存窗口 |
+| `test/jobs.test.js` | 四步状态、每步耗时、50 条日志上限、取消、单任务、留存窗口、`clearLogs` 保留运行中任务 |
 | `test/sticky.test.js` | 粘性行合并、实时行优先、无快照不造行、结果裁剪 |
 | `test/sticky-service.test.js` | **卸载期间行仍在**、安装日志进入任务、回滚失败保留行、自身保护、四步耗时 |
 | `test/service.test.js` | 非 Git 过滤、检查落状态、探测失败、更新全流程、并发、取消 |
-| `test/route.test.js` | GET/POST/job、confirm 校验、content-type、413、405、错误码（含 `SELF_UPDATE`） |
-| `test/client.test.js` | 格式化、汇总、步骤条、阶段判断、字典同步/占位符、`mergeViews`、compare 链接 |
+| `test/route.test.js` | GET/POST/job、confirm 校验、content-type、413、405、错误码（含 `SELF_UPDATE`）、`clearLogs` 免 package |
+| `test/client.test.js` | 格式化、汇总、步骤条、阶段判断、字典同步/占位符、`mergeViews`、compare 链接、名称跳转、日志清理调度 |
 
 ### 10.2 真机验证（本 profile）
 
@@ -411,7 +421,7 @@ dsh-git-updates/
 ├── docs/DETAIL.md         # 插件详情页文档
 ├── docs/DESIGN.md         # 本文档
 ├── icon.svg
-└── test/*.test.js         # 106 个单测
+└── test/*.test.js         # 117 个单测
 ```
 
 ### B. 安装与观察
