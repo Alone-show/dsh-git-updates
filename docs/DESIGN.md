@@ -110,7 +110,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 1. 打开设置页 → 组件挂载 → `GET /api/dsh-git-updates` 取列表（不联网）。
 2. 对 `check.at === null` 或缓存过期的行，逐行 `POST {action:'check'}`。
-3. 宿主探测：`git -c core.askPass= ls-remote --exit-code -- <https url> <ref|HEAD>`；凭据类失败且允许回退时改试 SSH。
+3. 宿主探测：`git -c core.askPass= ls-remote --exit-code -- <url> <ref|HEAD>`，子进程禁掉一切交互（不弹窗要凭据）；默认 HTTPS 先试，凭据类失败或 GitHub 对私有仓库匿名返回的 `Repository not found.` 且允许回退时改试 SSH。已记为 `transport: ssh` 的包反过来先试 SSH、HTTPS 只当兜底。
 4. 比较 `latest` 与已装 commit → `current` / `behind`；失败 → `unknown` + `{kind, message}`。
 5. 结果写 `.git-updates/state.json` 的 `lastCheck`，返回给页面。
 
@@ -172,7 +172,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `pinnedSpec(source, commit)` | `github:owner/repo#<sha>` | 状态/展示/日志里的规范写法（pnpm 落盘也是这个） |
 | `installSpec(source, name, commit, {ssh})` | `<包名>@<地址>#<sha>`，`ssh` 时地址是 `git+ssh://…` | 真正交给 `pnpm add` 的写法 |
 
-为什么要显式包名：pnpm 11 对「仓库名 ≠ 包名 + commit fragment」的 Git 依赖会把 fragment 混进 alias（`wechat_wroklog#<sha>`），报 `ERR_PNPM_INVALID_DEPENDENCY_NAME`；写成 `@local/wechat-worklog@git+ssh://…#<sha>` 后 pnpm 落盘仍归一成 `github:owner/repo#<sha>`。私有仓库（锁文件是 `git+ssh`，或探测只能走 SSH）直接用 SSH 地址，不依赖 pnpm 的 HTTPS 自动回退，也不弹凭据。
+为什么要显式包名：pnpm 11 对「仓库名 ≠ 包名 + commit fragment」的 Git 依赖会把 fragment 混进 alias（`wechat_wroklog#<sha>`），报 `ERR_PNPM_INVALID_DEPENDENCY_NAME`；写成 `@local/wechat-worklog@git+ssh://…#<sha>` 后 pnpm 落盘仍归一成 `github:owner/repo#<sha>`。私有仓库（锁文件是 `git+ssh`，或状态里粘性的 `transport: ssh`）直接用 SSH 地址，不依赖 pnpm 的 HTTPS 自动回退，也不弹凭据；「只能走 SSH」的结论每次成功检查/更新都会写回状态，下次继续生效。
 
 ### 7.3 已装 commit（`lib/lockfile.js`）
 
@@ -292,7 +292,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | 完成 | 绿色横幅「已更新到 `<sha>`，已生效」或「重启 DSH 后生效」+ 指引 |
 | 失败并回滚 | 红色横幅 + 原因 + 「已回滚到更新前的版本（`<sha>`）」 |
 | 回滚失败 | 红色横幅「该插件当前未安装」；该行保留（`sticky`） |
-| 无法检查 | 琥珀提示 + 失败原因；认证失败额外说明需要本机 git 凭据 |
+| 无法检查 | 琥珀提示 + 失败原因；认证失败额外说明需要本机 git 凭据（工具不会自己索要密码） |
 | 自身 | 「本工具」徽标 + 更新按钮禁用 + 提示到插件页更新 |
 | 粘性行 | 显示快照里的 commit 与任务进度，不因包被卸载而消失 |
 

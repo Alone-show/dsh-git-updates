@@ -846,3 +846,40 @@ test('cancelling one job leaves the other running', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('once a repo is known to need SSH, later checks and updates keep using SSH', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg')])
+    const probed = []
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      hmr: true,
+      probe: async (source, options) => {
+        probed.push(options.transport ?? 'https')
+        return { ok: true, commit: NEW, ref: 'main', transport: 'ssh' }
+      },
+    })
+    await service.ready
+
+    // 第一次检查只读得到 SSH：锁文件是 HTTPS tarball 形态，也要把结论记成粘性的。
+    await service.check('pkg', { force: true })
+    assert.equal((await readState(dir)).packages.pkg.transport, 'ssh')
+
+    // 客户端带上目标 commit 时不会重新探测；安装仍必须走 SSH，而不是 HTTPS 简写。
+    const started = await service.update('pkg', { expectedCommit: OLD, targetCommit: NEW })
+    await waitJob(service, started.jobId)
+    assert.equal(manager.calls.install[0].spec, `pkg@git+ssh://git@github.com/owner/repo.git#${NEW}`)
+
+    // 更新成功后仍然记着「只能走 SSH」，下次检查直接先走 SSH。
+    const state = await readState(dir)
+    assert.equal(state.packages.pkg.transport, 'ssh')
+    assert.equal(state.packages.pkg.lastCheck.transport, 'ssh')
+    await service.check('pkg', { force: true })
+    assert.equal(probed.at(-1), 'ssh')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

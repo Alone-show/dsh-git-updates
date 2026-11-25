@@ -23,7 +23,7 @@
 
 - 不处理 registry 包、tarball、`link:` 本地克隆——这些插件不会出现在列表里。
 - 不自己跑 `pnpm`：卸载、安装、回滚全部委托给宿主的插件管理器（`removeBundle` / `installBundle` / `cancelInstall`），失败原因原样转述。
-- 不存凭据：探测只用本机 `git` 的配置与凭据；私有仓库要么 HTTPS 有 token，要么 SSH 有 key。
+- 不存凭据：探测只用本机 `git` 的配置与凭据（SSH key / credential helper），并且禁掉一切交互提示——不会弹窗向你要用户名或密码；两者都不通时只报「无法检查」。
 - 不展示提交列表或文件变更（只显示 commit 与版本号）。
 - 不能自己重启 DSH：页面只给「刷新页面」按钮和明确指引。
 - **不更新本工具自己**：如果本工具本身以 Git 来源出现，那一行只给提示，请到插件页更新（否则宿主卸载它时，这一页和路由会一起消失）。
@@ -47,7 +47,7 @@
 | 装完校验不过（commit 不符、包名不符、没有 `dsh.bundle.patch`） | 同样自动回滚，报告 `VERIFY_FAILED` |
 | 回滚也失败 | 报告 `RESTORE_FAILED`，那一行保留并标「未安装」，提示到插件页重装 |
 
-每次检查/更新的结论记在 `<profile>/.git-updates/state.json`（0600，不含凭据）；「待重启」标记带宿主进程标识，重启后由启动对账自动清掉。
+每次检查/更新的结论（含该仓库该走 HTTPS 还是 SSH 的 `transport`）记在 `<profile>/.git-updates/state.json`（0600，不含凭据）；「待重启」标记带宿主进程标识，重启后由启动对账自动清掉。
 
 ## 配置
 
@@ -75,6 +75,7 @@
 - 不能在更新前预检新版本与当前 DSH 的兼容性（目标 commit 的清单不联网读），改为装后校验 + 自动回滚。
 - 需要本机有 `git`；只用 `git ls-remote` 读 ref，不 fetch 整个仓库、不调 GitHub API。
 - 私有仓库按锁文件/探测结果改用本机 SSH key，并以「包名@git+ssh://…」安装：既避开 pnpm 11 在「仓库名 ≠ 包名 + commit」时把 fragment 混进 alias 的 `ERR_PNPM_INVALID_DEPENDENCY_NAME`，也不会卡在 HTTPS 凭据提示。
+- 「只能走 SSH」是粘性的：一次探测/更新确认过之后记在 `state.json` 的 `transport`，之后检查和安装都直接先走 SSH，不再碰会要凭据的 HTTPS；GitHub 把私有仓库匿名访问报成 `Repository not found.` 时同样会回退到 SSH 试一次。
 - 保存的 spec 是 commit 时，工具会用「已装 commit 对上哪个分支的尖端」反查跟踪分支；如果分支已经往前走、对不上，需要在 `trackedRefs` 里显式写分支（否则退回按远端 HEAD 判断）。
 - 「那一行不消失」由宿主内存里的任务快照保证；宿主进程重启后，若某插件确实没装回来，行会消失（这是真实状态）。
 - 设置页是唯一入口：关掉设置期间任务继续跑，但没有全局 toast；重开设置后从任务状态恢复进度。
