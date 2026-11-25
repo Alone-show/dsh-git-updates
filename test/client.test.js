@@ -189,6 +189,27 @@ test('compareHref only links GitHub repositories', () => {
   assert.equal(compareHref({ host: 'gitlab.com', repository: 'g/r' }), undefined)
 })
 
+test('non-Git plugins render as a plain list with no controls', () => {
+  const t = (key, params) => {
+    if (key === 'kind.link') return '本地链接'
+    if (key === 'kind.registry') return '注册表'
+    if (key === 'state.disabled') return '已停用'
+    if (key === 'meta.version') return `版本 ${params.version}`
+    return client.__test.interpolate(key, params)
+  }
+  const rows = client.__test.otherRows([
+    { package: 'dsh-mdm-ssh', version: '0.0.0', kind: 'link', enabled: true },
+    { package: 'dsh-knowledge-base-local', title: '知识库', version: '1.2.6', kind: 'registry', enabled: false },
+  ], t, value => String(value))
+  assert.equal(rows.length, 2)
+  // 只有文本：不检查、不更新，所以一个按钮都不该有。
+  assert.equal(nodesOf(rows, 'button').length, 0)
+  const texts = row => Array.from(nodesOf(row, 'span'), node => String(node.children?.[0] ?? ''))
+  assert.deepEqual(texts(rows[0]), ['dsh-mdm-ssh', '版本 0.0.0', '本地链接'])
+  // 标题和包名不同：两个都显示；停用的单独标出来。
+  assert.deepEqual(texts(rows[1]), ['知识库', 'dsh-knowledge-base-local', '版本 1.2.6', '注册表', '已停用'])
+})
+
 test('apply registers exactly the settings page and its icon', () => {
   const registrations = []
   const ctx = {

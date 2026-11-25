@@ -20,8 +20,9 @@
 # 更新时包会先被卸载、从 listBundles() 消失：宿主用任务开跑前的快照把行补回来
 # （lib/sticky.js），所以设置页里的那一行不会消失，进度照常显示。
 #
-# 只处理 profile 里 github: / git+https: / git@host: 安装的插件；registry、
-# tarball、link: 来源的插件上不渲染任何控件。本工具不更新自己。
+# 只检查/更新 profile 里 github: / git+https: / git@host: 安装的插件；registry、
+# tarball、link: 来源的插件只在列表下方简单列出（名称/版本/来源），不渲染任何控件。
+# 本工具不更新自己。
 #
 # 可选配置与默认值（写在下面的 config 里覆盖即可）：
 #   probeTimeoutMs: 15000          单次 git ls-remote 超时

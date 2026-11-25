@@ -1,8 +1,10 @@
-# dsh-git-updates 方案文档（0.4.2）
+# dsh-git-updates 方案文档（0.5.0）
 
 > 目标：给「从 GitHub / Git 拉取安装的插件」补上检查更新与一键更新的能力，入口放在**设置**里。
 > 运行环境：DSH Desktop（`next` 通道，profile=`desktop`，DSH `0.2.2-rc.5`），Linux，Node 22，pnpm 11.28.5。
-> 文档日期：2026-11-25 · 插件版本：0.4.2（`link:/home/my/Downloads/dsh-git-updates`）
+> 文档日期：2026-11-25 · 插件版本：0.5.0（`link:/home/my/Downloads/dsh-git-updates`）
+>
+> **0.5.0**：列表行把「上次检查时间」换成**上游最新 commit 的提交时间**（宿主用一次性 `git fetch --depth=1 --filter=tree:0` 读 committer date，同一个 commit 只抓一次）；Git 列表下方简单列出**非 Git 来源的插件**（registry / tarball / `link:`，只有名称、版本与来源类别，不检查不更新）。
 >
 > **0.4.2**：关闭设置（或切走这一页）后丢弃已完成任务的更新日志（宿主 `POST {action:"clearLogs"}`，运行中任务保留）；插件名改成按钮，点击后关闭设置并跳到 DSH「插件」面板的该插件详情页。
 >
@@ -31,17 +33,17 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 
 **目标**
 
-1. 在**设置**里新增独立一栏「插件更新」：显示仓库、跟踪分支、已装 commit、上游最新 commit、上次检查时间。
+1. 在**设置**里新增独立一栏「插件更新」：显示仓库、跟踪分支、已装 commit、上游最新 commit 及其提交时间。
 2. 每行可检查更新、可一键更新到上游最新 commit，保持原「启用状态」不变。
 3. **更新时那一行不能消失**：卸载阶段包会从宿主插件列表里消失，界面必须保留该行并显示进度。
 4. 更新失败/取消自动回滚到原版本，并如实报告失败原因。
-5. 只处理 Git 来源依赖；registry、tarball、`link:` 一律不显示。
+5. 只检查/更新 Git 来源依赖；registry、tarball、`link:` 在列表下方简单列出，不给操作。
 6. 不引入新凭据、不新增常驻后台请求（页面打开或点按钮时才探测）。
 
 **非目标**
 
-- 不处理 `link:` 到本地克隆的插件（`dsh-kb`、`mdm-ssh`），那是 `git pull` 场景。
-- 不处理 registry / tarball 来源。
+- 不处理 `link:` 到本地克隆的插件（`dsh-kb`、`mdm-ssh`），那是 `git pull` 场景；只列出。
+- 不检查/更新 registry / tarball 来源；只列出。
 - 不直接调用 `pnpm`（所有包变更委托给宿主 plugin manager）。
 - 不做 GitHub API 调用（免 token、免限流），只用 `git ls-remote`。
 - 不在插件详情页、插件页标签或全局浮层添加任何控件。
@@ -116,7 +118,8 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 2. 对 `check.at === null` 或缓存过期的行，逐行 `POST {action:'check'}`。
 3. 宿主探测：`git -c core.askPass= ls-remote --exit-code -- <url> <ref|HEAD>`，子进程禁掉一切交互（不弹窗要凭据）；默认 HTTPS 先试，凭据类失败或 GitHub 对私有仓库匿名返回的 `Repository not found.` 且允许回退时改试 SSH。已记为 `transport: ssh` 的包反过来先试 SSH、HTTPS 只当兜底。
 4. 比较 `latest` 与已装 commit → `current` / `behind`；失败 → `unknown` + `{kind, message}`。
-5. 结果写 `.git-updates/state.json` 的 `lastCheck`，返回给页面。
+5. 读上游最新 commit 的**提交时间**（committer date）：一次性裸仓库里 `git fetch --depth=1 --no-tags --filter=tree:0` 目标 commit，`git log -1 --format=%cI`，随即删目录；先按 sha 抓、不行再按 ref 兜底，失败只丢时间不影响检查结论。**同一个 commit 只抓一次**（时间不会变，记在 `lastCheck.latestAt` 里复用）。
+6. 结果写 `.git-updates/state.json` 的 `lastCheck`，返回给页面；非 Git 来源的插件不探测，只按 `listBundles()` 报出名称/版本/来源类别（`others`）。
 
 ### 6.2 更新（有序、可回滚）
 
@@ -351,7 +354,7 @@ DSH 自带插件管理器**已经**有更新入口（详情页「更新」、`li
 | `test/jobs.test.js` | 四步状态、每步耗时、50 条日志上限、取消、单任务、留存窗口、`clearLogs` 保留运行中任务 |
 | `test/sticky.test.js` | 粘性行合并、实时行优先、无快照不造行、结果裁剪 |
 | `test/sticky-service.test.js` | **卸载期间行仍在**、安装日志进入任务、回滚失败保留行、自身保护、四步耗时 |
-| `test/service.test.js` | 非 Git 过滤、检查落状态、探测失败、更新全流程、并发、取消 |
+| `test/service.test.js` | 非 Git 过滤（`others`）、检查落状态与上游提交时间、探测失败、更新全流程、并发、取消 |
 | `test/route.test.js` | GET/POST/job、confirm 校验、content-type、413、405、错误码（含 `SELF_UPDATE`）、`clearLogs` 免 package |
 | `test/client.test.js` | 格式化、汇总、步骤条、阶段判断、字典同步/占位符、`mergeViews`、compare 链接、名称跳转、日志清理调度 |
 

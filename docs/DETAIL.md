@@ -8,7 +8,7 @@
 
 ## 功能
 
-- **只认 Git 来源**：`github:owner/repo`、`github:owner/repo#branch`、`git+https://…`、`git@host:owner/repo`。registry 包、tarball、`link:` 本地克隆不显示任何行。
+- **只检查 Git 来源**：`github:owner/repo`、`github:owner/repo#branch`、`git+https://…`、`git@host:owner/repo`。registry 包、tarball、`link:` 本地克隆不探测、不给操作，只在列表下方简单列出名称/版本/来源类别。
 - **上游怎么读**：本机 `git ls-remote` 读跟踪 ref（没写分支就读远端 `HEAD`）。子进程禁掉一切交互（`GIT_TERMINAL_PROMPT=0`、清空 askpass、`SSH_ASKPASS_REQUIRE=never`），只用本机配置，不会弹窗要用户名/密码。HTTPS 被挡住（凭据失败，或 GitHub 对私有仓库匿名返回的 `Repository not found.`）时按配置改试 SSH；已确认只能走 SSH 的仓库之后直接先走 SSH。不 fetch 仓库、不调 GitHub API、不发 token。
 - **已装 commit 从哪来**：`<profile>/pnpm-lock.yaml` 里 pnpm 记录的 codeload tarball 地址（也兼容 `git+ssh://…#<sha>` 与 peer 后缀）。
 - **跟踪分支**：spec 里有分支就用它；被钉成 commit 后用已装 commit 反查哪个分支的尖端是它（`git ls-remote --symref`），学到后持久化；分支已前进对不上时可用 `trackedRefs` 配置显式指定，避免把仓库默认分支误当插件分支。
@@ -33,8 +33,8 @@
 
 | 请求 | 作用 |
 | --- | --- |
-| `GET`（不带 package） | 全部受管包的视图 + `activeJob`；每行可能带 `job` 进度摘要、`sticky`/`installedMissing`、`self` |
-| `GET ?package=<name>` | 读缓存视图（已装/上游 commit、上次检查、上次更新、待重启、`check.stale`；读不到已装 commit 时 `check.state: "unknown"` 且 `error.kind: "no-commit"`） |
+| `GET`（不带 package） | 全部受管 Git 包的视图 + `others`（非 Git 来源插件的简单列表）+ `activeJob`；每行可能带 `job` 进度摘要、`sticky`/`installedMissing`、`self` |
+| `GET ?package=<name>` | 读缓存视图（已装/上游 commit、上游最新 commit 的提交时间、上次更新、待重启、`check.stale`；读不到已装 commit 时 `check.state: "unknown"` 且 `error.kind: "no-commit"`） |
 | `GET ?package=<name>&probe=1[&force=1]` | 读视图并向上游探测一次 |
 | `GET ?jobId=<id>` | 读更新任务：`steps`（含每步 `durationMs/status`）、`logs`、`elapsedMs` |
 | `GET` 返回的 `activeJobs` | 所有正在跑的任务摘要（每行按 `job` 取自己的那个） |
@@ -47,4 +47,4 @@
 
 ## 状态
 
-`<profile>/.git-updates/state.json`（0600，原子写）只记上次检查/上次更新/待重启，以及每个包该走哪种传输的 `transport`（`https` / `ssh`），不含凭据。待重启条目带宿主进程标识（pid + 进程启动时刻），下一个宿主进程启动时清掉并记 `lastUpdate.restartedAt`。
+`<profile>/.git-updates/state.json`（0600，原子写）只记上次检查（含上游最新 commit 的提交时间 `latestAt`）/上次更新/待重启，以及每个包该走哪种传输的 `transport`（`https` / `ssh`），不含凭据。待重启条目带宿主进程标识（pid + 进程启动时刻），下一个宿主进程启动时清掉并记 `lastUpdate.restartedAt`。

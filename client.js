@@ -4,7 +4,8 @@
  * 只在「设置」里出现：注册一个 `settings.section`（左侧导航「插件更新」）
  * 和一个对应图标，正文是一份 Git 来源插件的列表：
  *
- *   · 每一行：仓库、已装 commit → 上游 commit、上次检查、状态徽标；
+ *   · 每一行：仓库、已装 commit → 上游 commit、上游最新 commit 的提交时间、状态徽标；
+ *   · 列表下方简单列出非 Git 来源的插件（名称/版本/来源类别），不检查也不更新；
  *   · 检查更新 / 全部检查：逐行探测上游（宿主侧走 git ls-remote）；
  *   · 更新到 <sha>：二次确认后交给宿主「卸载 → 安装 → 校验」；
  *   · 进度：四步状态条 + 每步耗时 + 实时日志 + 结果横幅，可取消；
@@ -50,7 +51,7 @@ window.__ModuleLoader__.load({
     const zh = {
       'nav.label': '插件更新',
       'page.title': 'Git 插件更新',
-      'page.intro': '列出从 GitHub / Git 安装的插件，检查上游并更新到最新 commit。更新会短暂卸载插件，失败或取消会自动装回原版本。',
+      'page.intro': '列出从 GitHub / Git 安装的插件，检查上游并更新到最新 commit。更新会短暂卸载插件，失败或取消会自动装回原版本。下方另列出非 Git 来源的插件，只显示、不检查。',
       'page.empty': '没有从 Git 安装的插件。',
       'page.loading': '正在读取插件列表…',
       'page.unavailable': '无法读取更新服务（宿主路由不可用）。',
@@ -90,9 +91,14 @@ window.__ModuleLoader__.load({
       'section.repository': '仓库',
       'section.installed': '已装',
       'section.latest': '上游',
-      'section.checkedAt': '上次检查',
-      'section.never': '尚未检查',
+      'section.latestCommit': '最新提交',
       'section.compare': '查看差异',
+      'others.title': '其他插件（非 Git 来源）',
+      'others.hint': '这些插件不是从 Git 安装的，本页只列出来，不检查更新。',
+      'kind.link': '本地链接',
+      'kind.tarball': '压缩包',
+      'kind.registry': '注册表',
+      'state.disabled': '已停用',
       'step.checking': '检查上游',
       'step.removing': '卸载原版本',
       'step.installing': '安装目标版本',
@@ -137,7 +143,7 @@ window.__ModuleLoader__.load({
     const en = {
       'nav.label': 'Plugin updates',
       'page.title': 'Git plugin updates',
-      'page.intro': 'Lists plugins installed from GitHub / Git, checks upstream, and updates them to the latest commit. Updating briefly uninstalls the plugin; a failure or cancellation restores the previous version.',
+      'page.intro': 'Lists plugins installed from GitHub / Git, checks upstream, and updates them to the latest commit. Updating briefly uninstalls the plugin; a failure or cancellation restores the previous version. Non-Git plugins are listed below for reference only.',
       'page.empty': 'No plugins are installed from Git.',
       'page.loading': 'Reading the plugin list…',
       'page.unavailable': 'The update service is unavailable (host route missing).',
@@ -177,9 +183,14 @@ window.__ModuleLoader__.load({
       'section.repository': 'Repository',
       'section.installed': 'Installed',
       'section.latest': 'Upstream',
-      'section.checkedAt': 'Last checked',
-      'section.never': 'Never checked',
+      'section.latestCommit': 'Latest commit',
       'section.compare': 'Compare',
+      'others.title': 'Other plugins (non-Git)',
+      'others.hint': 'These plugins were not installed from Git. They are listed here only; no update checks.',
+      'kind.link': 'Local link',
+      'kind.tarball': 'Tarball',
+      'kind.registry': 'Registry',
+      'state.disabled': 'Disabled',
       'step.checking': 'Check upstream',
       'step.removing': 'Uninstall current',
       'step.installing': 'Install target',
@@ -537,6 +548,7 @@ window.__ModuleLoader__.load({
       .gu-icon { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; }
       .gu-icon svg { width: 13px; height: 13px; }
       .gu-list { display: grid; gap: 10px; }
+      .gu-content { display: grid; gap: 18px; }
       .gu-row {
         display: grid; gap: 10px; padding: 12px;
         border-radius: 10px;
@@ -589,6 +601,16 @@ window.__ModuleLoader__.load({
       .gu-logs li[data-level="warn"] { color: var(--dsw-alias-state-warn-primary); }
       .gu-logs li[data-level="error"] { color: var(--dsw-alias-state-error-primary, #dc2626); }
       .gu-empty { font-size: 12.5px; color: var(--dsw-alias-label-tertiary); }
+      .gu-others { display: grid; gap: 8px; }
+      .gu-others-title { margin: 0; font-size: 12.5px; line-height: 20px; font-weight: 600; color: var(--dsw-alias-label-secondary); }
+      .gu-other-list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+      .gu-other {
+        display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+        padding: 8px 12px; border-radius: 10px;
+        box-shadow: inset 0 0 0 var(--dsh-hairline-width, .5px) var(--dsw-alias-border-l3);
+      }
+      .gu-other-name { font-size: 12.5px; font-weight: 600; }
+      .gu-others .gu-hint { margin: 0; }
     `;
 
     /**
@@ -659,6 +681,29 @@ window.__ModuleLoader__.load({
     };
 
     /**
+     * 非 Git 插件的一行：名称、包名（与名称不同时）、版本、来源类别、停用态。
+     * 只有文本，没有任何按钮——这些插件不归本页检查/更新。
+     * @param {any[]} items 宿主返回的 `others`。
+     * @param {(key: string, params?: any) => string} t 翻译函数。
+     * @param {(text: any) => string} resolveText locale 服务。
+     * @returns {any[]} `li` 节点数组。
+     */
+    function otherRows(items, t, resolveText) {
+      return (Array.isArray(items) ? items : []).map(item => {
+        const label = textOf(resolveText, item.title, item.package);
+        return h('li', { key: item.package, className: 'gu-other' }, [
+          h('span', { key: 'name', className: 'gu-other-name' }, label),
+          label === item.package ? null : h('span', { key: 'pkg', className: 'gu-pkg' }, item.package),
+          typeof item.version === 'string' && item.version !== ''
+            ? h('span', { key: 'version', className: 'gu-badge' }, t('meta.version', { version: item.version }))
+            : null,
+          h('span', { key: 'kind', className: 'gu-badge' }, t(`kind.${item.kind}`)),
+          item.enabled === false ? h('span', { key: 'disabled', className: 'gu-badge' }, t('state.disabled')) : null,
+        ]);
+      });
+    }
+
+    /**
      * 设置页的「插件更新」正文。
      * @param {any} props 插槽 props（t、注入的 resolveText/openBundle、owner 的 close）。
      * @returns {any} React 节点。
@@ -668,6 +713,7 @@ window.__ModuleLoader__.load({
       const resolveText = props.resolveText ?? (value => (typeof value === 'string' ? value : ''));
       const [phase, setPhase] = useState('loading');
       const [views, setViews] = useState([]);
+      const [others, setOthers] = useState([]);
       const [activeJobs, setActiveJobs] = useState([]);
       const [error, setError] = useState(null);
       const [checking, setChecking] = useState({});
@@ -690,6 +736,7 @@ window.__ModuleLoader__.load({
           if (mounted.current !== true) return data;
           const incoming = Array.isArray(data.packages) ? data.packages : [];
           setViews(previous => mergeViews(previous, incoming, Date.now()));
+          setOthers(Array.isArray(data.others) ? data.others : []);
           setActiveJobs(Array.isArray(data.activeJobs) ? data.activeJobs : []);
           setPhase('ready');
           setError(null);
@@ -1064,7 +1111,7 @@ window.__ModuleLoader__.load({
             compare === undefined
               ? null
               : h('a', { key: 'compare', className: 'gu-link', href: compare, target: '_blank', rel: 'noreferrer noopener' }, t('section.compare')),
-            h('span', { key: 'checked' }, `${t('section.checkedAt')}: ${check.at === undefined || check.at === null ? t('section.never') : formatDate(check.at)}`),
+            h('span', { key: 'latestAt' }, `${t('section.latestCommit')}: ${formatDate(check.latestAt)}`),
           ]),
           h('div', { key: 'actions', className: 'gu-row-actions' }, [
             h('button', {
@@ -1106,6 +1153,17 @@ window.__ModuleLoader__.load({
         ]);
       });
 
+      const gitList = views.length === 0
+        ? h('p', { key: 'empty', className: 'gu-empty' }, t('page.empty'))
+        : h('div', { key: 'list', className: 'gu-list' }, rows);
+
+      // 非 Git 插件：放在 Git 列表下方，只列名称/版本/来源，不给任何操作。
+      const othersSection = others.length === 0 ? null : h('section', { key: 'others', className: 'gu-others' }, [
+        h('h3', { key: 'title', className: 'gu-others-title' }, t('others.title')),
+        h('p', { key: 'hint', className: 'gu-hint' }, t('others.hint')),
+        h('ul', { key: 'list', className: 'gu-other-list' }, otherRows(others, t, resolveText)),
+      ]);
+
       const body = phase === 'loading' && views.length === 0
         ? h('p', { key: 'loading', className: 'gu-empty' }, t('page.loading'))
         : (phase === 'error' && views.length === 0
@@ -1120,9 +1178,7 @@ window.__ModuleLoader__.load({
               onClick: () => { setPhase('loading'); void refresh(); },
             }, t('page.retry')),
           ])
-          : (views.length === 0
-            ? h('p', { key: 'empty', className: 'gu-empty' }, t('page.empty'))
-            : h('div', { key: 'list', className: 'gu-list' }, rows)));
+          : h('div', { key: 'content', className: 'gu-content' }, [gitList, othersSection]));
 
       return h('div', { className: 'gu-page' }, [
         h('style', { key: 'css' }, CSS),
@@ -1220,6 +1276,7 @@ window.__ModuleLoader__.load({
       openBundleDetail,
       scheduleLogClear,
       cancelScheduledLogClear,
+      otherRows,
       PluginUpdatesSection,
       PluginUpdatesIcon,
       dicts: { zh, en },

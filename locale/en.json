@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Git plugin updates",
-    "description": "Check plugins installed from GitHub / Git for new commits and update them in Settings; step progress, timings and logs stay visible, the row survives the temporary uninstall, and failures roll back automatically."
+    "description": "Check plugins installed from GitHub / Git for new commits and update them in Settings, with the upstream commit date; non-Git plugins are listed below. Step progress, timings and logs stay visible, the row survives the temporary uninstall, and failures roll back automatically."
   }
 }

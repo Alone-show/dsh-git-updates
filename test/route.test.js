@@ -14,6 +14,7 @@ function fakeService(overrides = {}) {
     calls,
     profileDir: '/tmp/profile',
     list: async options => { calls.push(['list', options]); return [view] },
+    others: async () => ([{ package: 'dsh-knowledge-base-local', version: '1.2.6', kind: 'registry', enabled: true }]),
     view: async name => { calls.push(['view', name]); return name === 'pkg' ? view : undefined },
     check: async (name, options) => { calls.push(['check', name, options]); return { ...view, check: { state: 'behind', latest: 'b'.repeat(40) } } },
     update: async (name, options) => { calls.push(['update', name, options]); return { jobId: 'job-1', package: name, targetCommit: 'b'.repeat(40) } },
@@ -53,6 +54,8 @@ test('GET a package view and the whole list', async () => {
   const list = await route.fetch(new Request(`http://localhost${ROUTE_PATH}`))
   const listBody = await list.json()
   assert.equal(listBody.packages.length, 1)
+  assert.equal(listBody.others.length, 1)
+  assert.equal(listBody.others[0].package, 'dsh-knowledge-base-local')
   assert.deepEqual(listBody.activeJobs, [])
 
   const missing = await route.fetch(new Request(`http://localhost${ROUTE_PATH}?package=nope`))

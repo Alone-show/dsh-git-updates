@@ -106,6 +106,48 @@ test('list and view expose the installed commit for Git bundles only', async () 
     assert.equal(views[0].host, 'github.com')
     assert.equal((await service.view('pkg')).applicable, true)
     assert.equal((await service.view('reg')).applicable, false)
+    // 非 Git 来源的第三方插件只列出来（official 不算）；按包名排序。
+    const others = await service.others()
+    assert.deepEqual(others.map(item => item.package), ['local', 'reg'])
+    assert.deepEqual(others.map(item => item.kind), ['link', 'registry'])
+    assert.equal(others[1].version, '1.0.0')
+    assert.equal(others[1].source, '^1.0.0')
+    // 本工具自己不混进「其他插件」。
+    const withSelf = createService({ manager, profileDir: dir, config: resolveConfig({}), ownPackage: 'reg' })
+    assert.deepEqual((await withSelf.others()).map(item => item.package), ['local'])
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('check records the upstream commit time and reuses it for the same commit', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg')])
+    const calls = []
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      // 时间来自一次性浅抓取；这里只验证「抓一次、记下来、同一 commit 复用」。
+      commitTime: async (source, options) => {
+        calls.push(options)
+        return '2026-11-01T02:03:04.000Z'
+      },
+      probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
+    })
+    const first = await service.check('pkg', { force: true })
+    assert.equal(first.check.latestAt, '2026-11-01T02:03:04.000Z')
+    assert.equal(calls.length, 1)
+    assert.equal(calls[0].commit, NEW)
+    assert.equal(calls[0].ref, 'main')
+    const state = await readState(dir)
+    assert.equal(state.packages.pkg.lastCheck.latestAt, '2026-11-01T02:03:04.000Z')
+    // 同一个 commit：再强制检查也不重复抓时间，视图照样带着它。
+    const again = await service.check('pkg', { force: true })
+    assert.equal(again.check.latestAt, '2026-11-01T02:03:04.000Z')
+    assert.equal(calls.length, 1)
+    assert.equal((await service.view('pkg')).check.latestAt, '2026-11-01T02:03:04.000Z')
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -120,6 +162,7 @@ test('check probes upstream and persists the result', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async (source, options) => {
         probed.push({ source, options })
         return { ok: true, commit: NEW, ref: 'main', transport: 'https' }
@@ -138,6 +181,31 @@ test('check probes upstream and persists the result', async () => {
   }
 })
 
+test('an unavailable commit time is recorded once and not retried for the same commit', async () => {
+  const dir = await makeProfile()
+  try {
+    const manager = fakeManager(dir, [bundleFor('pkg')])
+    let calls = 0
+    const service = createService({
+      manager,
+      profileDir: dir,
+      config: resolveConfig({}),
+      commitTime: async () => { calls += 1; return undefined },
+      probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
+    })
+    const first = await service.check('pkg', { force: true })
+    // 试过但读不到：记 null，页面显示 —，缓存不再因为缺时间而反复重查。
+    assert.equal(first.check.latestAt, null)
+    assert.equal(calls, 1)
+    const again = await service.check('pkg', { force: true })
+    assert.equal(again.check.latestAt, null)
+    assert.equal(calls, 1)
+    assert.equal((await service.view('pkg')).check.latestAt, null)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
 test('check records an unreachable upstream without throwing', async () => {
   const dir = await makeProfile()
   try {
@@ -146,6 +214,7 @@ test('check records an unreachable upstream without throwing', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: false, kind: 'auth', message: 'fatal: could not read Username' }),
     })
     const view = await service.check('pkg', { force: true })
@@ -164,6 +233,7 @@ test('update runs to completion and pins the upstream commit', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
@@ -188,6 +258,7 @@ test('update refuses a stale view, an unchanged commit and an unknown installed 
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
     await assert.rejects(() => service.update('pkg', { expectedCommit: NEW }), error => error.code === 'STALE_VIEW')
@@ -196,6 +267,7 @@ test('update refuses a stale view, an unchanged commit and an unknown installed 
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: true, commit: OLD, ref: 'main', transport: 'https' }),
     })
     await assert.rejects(() => currentService.update('pkg', {}), error => error.code === 'ALREADY_LATEST')
@@ -210,6 +282,7 @@ test('update refuses a stale view, an unchanged commit and an unknown installed 
       manager,
       profileDir: empty,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
     await assert.rejects(() => service.update('pkg', {}), error => error.code === 'UNKNOWN_INSTALLED_COMMIT')
@@ -228,6 +301,7 @@ test('a second update while one runs is refused', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
@@ -249,6 +323,7 @@ test('cancel asks the host to stop the running installation', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
@@ -273,6 +348,7 @@ test('the job view carries steps, logs and timings', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       bootId: 'boot-a',
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
@@ -300,6 +376,7 @@ test('a restart-required update is remembered until the next Host boot', async (
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       bootId: 'boot-a',
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
@@ -338,6 +415,7 @@ test('an update applied by HMR leaves no pending restart', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       bootId: 'boot-a',
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
@@ -386,6 +464,7 @@ test('sweep checks every managed Git bundle and counts the ones behind', async (
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async source => {
         probed.push(source.path)
         return { ok: true, commit: NEW, ref: 'main', transport: 'https' }
@@ -415,6 +494,7 @@ test('sweep skips while an update job is running and survives probe failures', a
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async () => {
         probed.push('probe')
@@ -432,6 +512,7 @@ test('sweep skips while an update job is running and survives probe failures', a
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: false, kind: 'network', message: 'offline' }),
     })
     await failing.ready
@@ -454,9 +535,12 @@ test('an old check is flagged stale in the view', async () => {
     await recordCheck(dir, 'pkg', { at: new Date(Date.now() - 3600000).toISOString(), state: 'current', latest: OLD })
     const view = await service.view('pkg')
     assert.equal(view.check.stale, true)
-    await recordCheck(dir, 'pkg', { at: new Date().toISOString(), state: 'current', latest: OLD })
+    await recordCheck(dir, 'pkg', { at: new Date().toISOString(), state: 'current', latest: OLD, latestAt: '2026-11-01T00:00:00.000Z' })
     const fresh = await service.view('pkg')
     assert.equal(fresh.check.stale, false)
+    // 老状态文件：记了上游 commit 却没有提交时间，缓存再新也要重查一次把时间补齐。
+    await recordCheck(dir, 'pkg', { at: new Date().toISOString(), state: 'current', latest: OLD })
+    assert.equal((await service.view('pkg')).check.stale, true)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }
@@ -471,6 +555,7 @@ test('a confirmed target commit skips the upstream probe and installs exactly th
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       bootId: 'boot-a',
       probe: async () => {
@@ -529,6 +614,7 @@ test('a probe that cannot read the installed commit reports unknown instead of b
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'https' }),
     })
     await service.ready
@@ -563,6 +649,7 @@ test('a lockfile resolved over SSH makes the update install through SSH', async 
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async () => ({ ok: true, commit: NEW, ref: 'main', transport: 'ssh' }),
     })
@@ -589,6 +676,7 @@ test('a pinned spec discovers the branch its installed commit belongs to', async
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probeRefs: async () => {
         listed += 1
         return {
@@ -624,6 +712,7 @@ test('without a matching branch or configured ref, discovery falls back to HEAD'
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       probeRefs: async () => ({
         ok: true,
         head: NEW,
@@ -652,6 +741,7 @@ test('a configured trackedRef overrides HEAD for a pinned spec', async () => {
       manager,
       profileDir: dir,
       config: resolveConfig({ trackedRefs: { pkg: 'dsh-plugin' } }),
+      commitTime: async () => undefined,
       probe: async (source, options) => {
         seen.push(options.ref)
         return { ok: true, commit: latest, ref: options.ref, transport: 'ssh' }
@@ -856,6 +946,7 @@ test('once a repo is known to need SSH, later checks and updates keep using SSH'
       manager,
       profileDir: dir,
       config: resolveConfig({}),
+      commitTime: async () => undefined,
       hmr: true,
       probe: async (source, options) => {
         probed.push(options.transport ?? 'https')
